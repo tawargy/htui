@@ -88,9 +88,7 @@ impl Theme {
     }
 
     pub fn new_space_action() -> Style {
-        Style::default()
-            .fg(Self::SPRING_GREEN)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)
     }
 
     pub fn tab_bar_bg() -> Style {
@@ -109,9 +107,7 @@ impl Theme {
     }
 
     pub fn tab_new_terminal() -> Style {
-        Style::default()
-            .fg(Self::WAVE_AQUA2)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)
     }
 
     pub fn selection() -> Style {
@@ -133,9 +129,14 @@ mod tests {
         assert_eq!(Theme::status_bar().fg, Some(Theme::OLD_WHITE));
         assert_eq!(Theme::tab_bar_bg().bg, None);
         assert_eq!(Theme::tab_bar_bg().fg, Some(Theme::SUMI_INK4));
-        assert_eq!(Theme::tab_new_terminal().bg, None);
-        assert_eq!(Theme::tab_new_terminal().fg, Some(Theme::WAVE_AQUA2));
-        assert!(Theme::tab_new_terminal()
+        assert_eq!(Theme::tab_new_terminal().bg, Some(Theme::SUMI_INK3));
+        assert_eq!(Theme::tab_new_terminal().fg, Some(Theme::OLD_WHITE));
+        assert!(!Theme::tab_new_terminal()
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(Theme::new_space_action().bg, Some(Theme::SUMI_INK3));
+        assert_eq!(Theme::new_space_action().fg, Some(Theme::OLD_WHITE));
+        assert!(!Theme::new_space_action()
             .add_modifier
             .contains(Modifier::BOLD));
         assert_eq!(Theme::tab_active().bg, Some(Theme::CRYSTAL_BLUE));

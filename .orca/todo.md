@@ -6,15 +6,15 @@
 **Description:** Update `Theme::new_space_action()` and `Theme::tab_new_terminal()` to match `Theme::tab_inactive()` (`fg: OLD_WHITE`, `bg: SUMI_INK3`, no `BOLD` modifier). Retain `Theme::badge_active()`. Update `kanagawa_wave_palette_styles` unit test to verify new styles.
 
 **Acceptance criteria:**
-- [ ] `Theme::new_space_action()` returns `Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)` without `Modifier::BOLD`.
-- [ ] `Theme::tab_new_terminal()` returns `Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)` without `Modifier::BOLD`.
-- [ ] `Theme::badge_active()` remains intact in `Theme` for backwards compatibility.
-- [ ] Unit test `kanagawa_wave_palette_styles` in `src/ui/theme.rs` asserts `Theme::tab_new_terminal().bg == Some(Theme::SUMI_INK3)`, `fg == Some(Theme::OLD_WHITE)`, and modifier does NOT contain `Modifier::BOLD`.
-- [ ] Unit test `kanagawa_wave_palette_styles` asserts `Theme::new_space_action().bg == Some(Theme::SUMI_INK3)`, `fg == Some(Theme::OLD_WHITE)`, and modifier does NOT contain `Modifier::BOLD`.
+- [x] `Theme::new_space_action()` returns `Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)` without `Modifier::BOLD`.
+- [x] `Theme::tab_new_terminal()` returns `Style::default().fg(Self::OLD_WHITE).bg(Self::SUMI_INK3)` without `Modifier::BOLD`.
+- [x] `Theme::badge_active()` remains intact in `Theme` for backwards compatibility.
+- [x] Unit test `kanagawa_wave_palette_styles` in `src/ui/theme.rs` asserts `Theme::tab_new_terminal().bg == Some(Theme::SUMI_INK3)`, `fg == Some(Theme::OLD_WHITE)`, and modifier does NOT contain `Modifier::BOLD`.
+- [x] Unit test `kanagawa_wave_palette_styles` asserts `Theme::new_space_action().bg == Some(Theme::SUMI_INK3)`, `fg == Some(Theme::OLD_WHITE)`, and modifier does NOT contain `Modifier::BOLD`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib ui::theme::tests::kanagawa_wave_palette_styles`
-- [ ] Build succeeds: `cargo check`
+- [x] Tests pass: `cargo test --lib ui::theme::tests::kanagawa_wave_palette_styles`
+- [x] Build succeeds: `cargo check`
 
 **Dependencies:** None
 
@@ -26,8 +26,8 @@
 ---
 
 ## Checkpoint: Theme Foundation
-- [ ] All unit tests in `src/ui/theme.rs` pass (`cargo test --lib ui::theme::tests`)
-- [ ] Build succeeds without warnings
+- [x] All unit tests in `src/ui/theme.rs` pass (`cargo test --lib ui::theme::tests`)
+- [x] Build succeeds without warnings
 
 ---
 
