@@ -37,14 +37,14 @@
 **Description:** Update `src/ui/panes.rs` empty-pane spawn button to use `Theme::tab_new_terminal()`. Update existing tab bar assertions in `tests/ui_snapshots.rs` (lines 1503-1509) to assert `SUMI_INK3` background and `OLD_WHITE` foreground. Add test in `tests/ui_snapshots.rs` checking empty-pane spawn button cells match `SUMI_INK3` bg and `OLD_WHITE` fg.
 
 **Acceptance criteria:**
-- [ ] `src/ui/panes.rs` renders `SPAWN_PANE_LABEL` with `Theme::tab_new_terminal()` instead of `Theme::badge_active()`.
-- [ ] `tests/ui_snapshots.rs` in test `tab_bar_and_footer_inherit_app_background` asserts all cells in `new_rect` have `bg == Theme::SUMI_INK3` and `fg == Theme::OLD_WHITE`.
-- [ ] `tests/ui_snapshots.rs` includes a test verifying empty-pane spawn button cells have `bg == Theme::SUMI_INK3` and `fg == Theme::OLD_WHITE`.
+- [x] `src/ui/panes.rs` renders `SPAWN_PANE_LABEL` with `Theme::tab_new_terminal()` instead of `Theme::badge_active()`.
+- [x] `tests/ui_snapshots.rs` in test `tab_bar_and_footer_inherit_app_background` asserts all cells in `new_rect` have `bg == Theme::SUMI_INK3` and `fg == Theme::OLD_WHITE`.
+- [x] `tests/ui_snapshots.rs` includes a test verifying empty-pane spawn button cells have `bg == Theme::SUMI_INK3` and `fg == Theme::OLD_WHITE`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test ui_snapshots tab_bar_and_footer_inherit_app_background`
-- [ ] Tests pass: `cargo test --test ui_snapshots empty_pane`
-- [ ] Build succeeds: `cargo check`
+- [x] Tests pass: `cargo test --test ui_snapshots tab_bar_and_footer_inherit_app_background`
+- [x] Tests pass: `cargo test --test ui_snapshots empty_pane`
+- [x] Build succeeds: `cargo check`
 
 **Dependencies:** Task 1
 
@@ -57,8 +57,8 @@
 ---
 
 ## Checkpoint: Tab Bar & Panes
-- [ ] `cargo test --test ui_snapshots tab_bar_and_footer_inherit_app_background` passes
-- [ ] `cargo test --test ui_snapshots empty_pane` passes
+- [x] `cargo test --test ui_snapshots tab_bar_and_footer_inherit_app_background` passes
+- [x] `cargo test --test ui_snapshots empty_pane` passes
 
 ---
 

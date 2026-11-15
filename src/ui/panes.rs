@@ -121,7 +121,7 @@ pub fn render_panes(
                 let btn_y = inner.y + inner.height / 2;
                 let btn_area = Rect::new(btn_x, btn_y, lbl_w, 1);
                 spawn_rect = Some(btn_area);
-                Paragraph::new(Span::styled(SPAWN_PANE_LABEL, Theme::badge_active()))
+                Paragraph::new(Span::styled(SPAWN_PANE_LABEL, Theme::tab_new_terminal()))
                     .render(btn_area, buf);
             }
         }

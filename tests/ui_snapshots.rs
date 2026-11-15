@@ -18,7 +18,7 @@ use herdr_tui::ui::theme::Theme;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::Terminal as RatatuiTerminal;
 
 fn buffer_to_string(buf: &Buffer) -> String {
@@ -545,6 +545,24 @@ fn empty_pane_spawn_button_click() {
     assert!(!app.sidebar_focused);
     assert_eq!(app.focused_pane, Some(pane_id));
     assert!(matches!(app.dialog, Some(ActiveDialog::Spawn(_))));
+}
+
+#[test]
+fn empty_pane_spawn_button_style() {
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let now = std::time::Instant::now();
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf, now);
+
+    let pane_hitbox = app.last_geom.panes.first().expect("pane hitbox");
+    let btn = pane_hitbox.spawn_btn.expect("spawn_btn on empty pane");
+    for x in btn.x..btn.x + btn.width {
+        let cell = buf.cell((x, btn.y)).expect("spawn button cell");
+        assert_eq!(cell.bg, Theme::SUMI_INK3);
+        assert_eq!(cell.fg, Theme::OLD_WHITE);
+        assert!(!cell.modifier.contains(Modifier::BOLD));
+    }
 }
 
 #[test]
@@ -1500,12 +1518,12 @@ fn tab_bar_and_footer_inherit_app_background() {
         assert_ne!(cell.bg, Theme::SUMI_INK0);
     }
 
-    // [+ New Terminal] button inherits app background while keeping WAVE_AQUA2 foreground
+    // [+ New Terminal] button matches tab_inactive style: SUMI_INK3 background, OLD_WHITE foreground
     for x in new_rect.x..new_rect.x + new_rect.width {
         let cell = buf.cell((x, 0)).expect("new terminal button cell");
-        assert_eq!(cell.bg, Color::Reset);
-        assert_ne!(cell.bg, Theme::SUMI_INK0);
-        assert_eq!(cell.fg, Theme::WAVE_AQUA2);
+        assert_eq!(cell.bg, Theme::SUMI_INK3);
+        assert_eq!(cell.fg, Theme::OLD_WHITE);
+        assert!(!cell.modifier.contains(Modifier::BOLD));
     }
 }
 
