@@ -45,22 +45,22 @@ Unify the visual styling of all "new space" and "new terminal" action buttons ac
 ## Task List
 
 ### Phase 1: Theme Style Contract & Unit Tests
-- [ ] Task 1: Update `Theme::new_space_action()` and `Theme::tab_new_terminal()` in `src/ui/theme.rs` and update unit tests
+- [x] Task 1: Update `Theme::new_space_action()` and `Theme::tab_new_terminal()` in `src/ui/theme.rs` and update unit tests
 
 ### Checkpoint: Theme Foundation
-- [ ] `cargo test --lib ui::theme::tests::kanagawa_wave_palette_styles` passes
+- [x] `cargo test --lib ui::theme::tests::kanagawa_wave_palette_styles` passes
 
 ### Phase 2: Tab Bar & Empty Pane Button Styling
-- [ ] Task 2: Switch empty-pane spawn label in `src/ui/panes.rs` to `Theme::tab_new_terminal()`, update tab bar snapshot assertions and add empty-pane style snapshot test in `tests/ui_snapshots.rs`
+- [x] Task 2: Switch empty-pane spawn label in `src/ui/panes.rs` to `Theme::tab_new_terminal()`, update tab bar snapshot assertions and add empty-pane style snapshot test in `tests/ui_snapshots.rs`
 
 ### Checkpoint: Tab Bar & Panes
-- [ ] `cargo test --test ui_snapshots tab_bar` and empty pane tests pass
+- [x] `cargo test --test ui_snapshots tab_bar` and empty pane tests pass
 
 ### Phase 3: Sidebar New Space Action & Selection Highlight
-- [ ] Task 3: Separate indent and guard selection override for `SidebarItem::NewSpaceAction` in `src/ui/sidebar.rs`, and add snapshot tests in `tests/ui_snapshots.rs`
+- [x] Task 3: Separate indent and guard selection override for `SidebarItem::NewSpaceAction` in `src/ui/sidebar.rs`, and add snapshot tests in `tests/ui_snapshots.rs`
 
 ### Checkpoint: Full Regression & Build
-- [ ] `cargo test` passes cleanly with 0 failures across all 33 unit tests and all integration test suites
+- [x] `cargo test` passes cleanly with 0 failures across all 33 unit tests and all integration test suites
 
 ---
 
