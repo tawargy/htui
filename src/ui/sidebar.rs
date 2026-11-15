@@ -279,7 +279,17 @@ fn render_spaces_panel(area: Rect, buf: &mut Buffer, state: &SidebarState, focus
                     Span::styled(format!("({count})"), Theme::terminal_finished()),
                 ]),
                 SidebarItem::NewSpaceAction => {
-                    Line::from(Span::styled("  [+ New Space]", Theme::new_space_action()))
+                    let is_selected =
+                        state.active_panel == SidebarPanel::Spaces && idx == state.selected;
+                    let action_style = if is_selected {
+                        Style::default()
+                    } else {
+                        Theme::new_space_action()
+                    };
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled("[+ New Space]", action_style),
+                    ])
                 }
                 SidebarItem::Terminal { .. } => Line::from(""),
             };

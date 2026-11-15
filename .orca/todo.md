@@ -68,17 +68,17 @@
 **Description:** In `src/ui/sidebar.rs`, separate the leading `"  "` indent from `"[+ New Space]"` so the indent does not receive `SUMI_INK3` background. When selected (`state.active_panel == SidebarPanel::Spaces && idx == state.selected`), apply `Style::default()` to the button span so `ListItem::style(Theme::selected_row())` (`WAVE_BLUE2` bg, `FUJI_WHITE` fg, `BOLD`) completely highlights the row without `SUMI_INK3` overriding the background. Add snapshot tests in `tests/ui_snapshots.rs` verifying both unselected and selected styling of `[+ New Space]`.
 
 **Acceptance criteria:**
-- [ ] In `src/ui/sidebar.rs` `render_spaces_panel`, `SidebarItem::NewSpaceAction` renders `Line::from(vec![Span::raw("  "), Span::styled("[+ New Space]", action_style)])`.
-- [ ] `action_style` is `Style::default()` when `is_selected` is true, and `Theme::new_space_action()` when `is_selected` is false.
-- [ ] In `tests/ui_snapshots.rs`, add a test (or extend existing tests) verifying:
+- [x] In `src/ui/sidebar.rs` `render_spaces_panel`, `SidebarItem::NewSpaceAction` renders `Line::from(vec![Span::raw("  "), Span::styled("[+ New Space]", action_style)])`.
+- [x] `action_style` is `Style::default()` when `is_selected` is true, and `Theme::new_space_action()` when `is_selected` is false.
+- [x] In `tests/ui_snapshots.rs`, add a test (or extend existing tests) verifying:
   - When `SidebarItem::NewSpaceAction` is unselected, the `"  "` indent cells have `Color::Reset` background, and the `"[+ New Space]"` cells have `bg == Theme::SUMI_INK3` and `fg == Theme::OLD_WHITE`.
   - When `SidebarItem::NewSpaceAction` is selected (`active_panel == SidebarPanel::Spaces` and `selected == 0`), row cells have `bg == Theme::WAVE_BLUE2`, `fg == Theme::FUJI_WHITE`, and `Modifier::BOLD`.
-- [ ] All sidebar mouse navigation and clicking tests in `tests/ui_snapshots.rs` continue to pass.
+- [x] All sidebar mouse navigation and clicking tests in `tests/ui_snapshots.rs` continue to pass.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test ui_snapshots sidebar`
-- [ ] Tests pass: `cargo test --test ui_snapshots new_space`
-- [ ] Full test suite passes: `cargo test`
+- [x] Tests pass: `cargo test --test ui_snapshots sidebar`
+- [x] Tests pass: `cargo test --test ui_snapshots new_space`
+- [x] Full test suite passes: `cargo test`
 
 **Dependencies:** Task 1, Task 2
 
@@ -91,5 +91,5 @@
 ---
 
 ## Final Checkpoint: Full Regression & Build
-- [ ] Full test suite passes: `cargo test` (33 lib unit tests + all integration test binaries)
-- [ ] No compilation warnings or clippy errors: `cargo clippy --all-targets`
+- [x] Full test suite passes: `cargo test` (33 lib unit tests + all integration test binaries)
+- [x] No compilation warnings or clippy errors: `cargo clippy --all-targets`

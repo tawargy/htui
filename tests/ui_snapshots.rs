@@ -639,6 +639,60 @@ fn sidebar_new_space_at_index_zero_and_keyboard_nav() {
 }
 
 #[test]
+fn sidebar_new_space_action_styling_unselected_and_selected() {
+    use herdr_tui::ui::sidebar::SidebarItem;
+
+    let mut sb = SidebarState::default();
+    sb.visible_items.push(SidebarItem::NewSpaceAction);
+    sb.visible_items.push(SidebarItem::Machine {
+        name: "local".into(),
+        state: "connected".into(),
+    });
+
+    let area = Rect::new(0, 0, 32, 14);
+
+    // 1. Unselected: sb.selected = 1
+    sb.active_panel = SidebarPanel::Spaces;
+    sb.selected = 1;
+
+    let mut buf = Buffer::empty(area);
+    render_sidebar(area, &mut buf, &sb, true);
+
+    // Row 0 of spaces panel inner is at y = 1, x = 1 (border at x = 0, y = 0)
+    // Indent at x = 1, 2 must have Color::Reset bg
+    let indent0 = buf.cell((1, 1)).expect("indent cell 0");
+    let indent1 = buf.cell((2, 1)).expect("indent cell 1");
+    assert_eq!(indent0.symbol(), " ");
+    assert_eq!(indent0.bg, Color::Reset);
+    assert_eq!(indent1.symbol(), " ");
+    assert_eq!(indent1.bg, Color::Reset);
+
+    // Button "[+ New Space]" at x = 3..16 (13 chars)
+    let label = "[+ New Space]";
+    for (i, ch) in label.chars().enumerate() {
+        let x = 3 + i as u16;
+        let cell = buf.cell((x, 1)).expect("new space button cell");
+        assert_eq!(cell.symbol(), &ch.to_string());
+        assert_eq!(cell.bg, Theme::SUMI_INK3);
+        assert_eq!(cell.fg, Theme::OLD_WHITE);
+        assert!(!cell.modifier.contains(Modifier::BOLD));
+    }
+
+    // 2. Selected: sb.selected = 0
+    sb.selected = 0;
+    let mut buf_sel = Buffer::empty(area);
+    render_sidebar(area, &mut buf_sel, &sb, true);
+
+    // Entire row must have WAVE_BLUE2 bg, FUJI_WHITE fg, BOLD modifier
+    for x in 1..31 {
+        let cell = buf_sel.cell((x, 1)).expect("selected row cell");
+        assert_eq!(cell.bg, Theme::WAVE_BLUE2, "cell at x={x} should have WAVE_BLUE2 bg");
+        assert_eq!(cell.fg, Theme::FUJI_WHITE, "cell at x={x} should have FUJI_WHITE fg");
+        assert!(cell.modifier.contains(Modifier::BOLD), "cell at x={x} should have BOLD modifier");
+    }
+}
+
+#[test]
 fn close_last_terminal_removes_terminal_and_empty_space() {
     use herdr_tui::model::tree::UNASSIGNED_SPACE;
     use herdr_tui::ui::sidebar::SidebarItem;
