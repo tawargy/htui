@@ -1,105 +1,80 @@
-# Task Breakdown: Fix Side-by-Side Terminal Resize Text Corruption
+# Task Breakdown: Fix Remaining Side-by-Side Divider Breakage & Cross-Pane Text Bleeding During Drag
 
-## Task 1: Harden `Vt100Screen::cell` and `Vt100Screen::render_to_buffer` against boundary, wide, zero-width, and stale-cell corruption
+## Task 1: Harden `Vt100Screen::cell` against `Cf`, `U+00AD`, variation selectors, and ZWJ clusters
 
-**Description:** Update `src/term/screen.rs` so that `Vt100Screen` never emits symbols or buffer states that desynchronize `ratatui::Buffer::diff` or `CrosstermBackend::draw` across side-by-side pane boundaries. Normalize zero-width and control-character graphemes to `" "` in `Vt100Screen::cell` (while preserving multi-codepoint combining graphemes like Arabic harakat whose base character has width >= 1). In `Vt100Screen::render_to_buffer`, compute `UnicodeWidthStr::width` for every rendered symbol, prevent wide glyphs from overflowing `area.width` (`c + sym_width > area.width`), reset `skip_cols` continuation cells in `buf`, replace unexpected `wide_continuation` cells with styled `" "` instead of skipping via `continue`, and reset any cells in `area` outside `(0..max_cols, 0..max_rows)`. Check `src/ui/panes.rs` to ensure `render_panes` never writes outside each pane's `Rect`.
+**Description:** Update `src/term/screen.rs` so `Vt100Screen::cell` strips control characters, soft hyphen (`U+00AD`), Unicode `Cf` format characters (e.g. BIDI overrides/isolates `U+202A..=U+202E`, `U+2066..=U+2069`, `U+200B..=U+200F`, `U+FEFF`, etc.), and variation selectors (`U+FE00..=U+FE0F`, `U+E0100..=U+E01EF`) from the raw cell contents *before* extracting the first grapheme via `preserve_first_grapheme`, then falls back to `" "` if the resulting grapheme is empty or `UnicodeWidthStr::width == 0`. Stripping before `preserve_first_grapheme` ensures ZWJ emoji sequences (e.g. `"👨\u{200D}👩"`) collapse to `"👨"` (matching `vt100`'s width) instead of concatenating multiple wide emojis into one cell, and `⚠️` (`U+26A0 U+FE0F`) collapses to `⚠` (width 1 in both `vt100` and `ratatui`), while Arabic harakat combining marks (`Mn`, e.g. `"بِ"`, `"لَّ"`, `"شُ"`) remain preserved. Add focused unit tests in `tests/term.rs`.
 
 **Acceptance criteria:**
-- [x] `Vt100Screen::cell` replaces any grapheme with `UnicodeWidthStr::width == 0` or `chars().any(char::is_control)` with `" "`, while preserving Arabic harakat clusters (e.g. `"بِ"`, `"لَّ"`, `"شُ"`).
-- [x] `Vt100Screen::render_to_buffer` never writes a cell of `UnicodeWidthStr::width > 1` where `c as usize + sym_width > area.width as usize` (substituting `" "` with the cell's style), resets covered continuation cells (`skip_cols`), never leaves stale symbols in `wide_continuation` cells, and resets cells in `area` beyond `(max_cols, max_rows)`.
-- [x] Focused tests in `tests/term.rs` and `tests/ui_snapshots.rs` verify wide chars at the rightmost column, orphaned `vt100` wide cells after shrink resize, zero-width/control chars, and Arabic harakat do not alter the adjacent pane's `│` border or `Buffer::diff` column alignment.
+- [x] `Vt100Screen::cell` strips `U+00AD`, Unicode `Cf` format characters (`U+202A..=U+202E`, `U+2066..=U+2069`, `U+200B..=U+200F`, `U+FEFF`, etc.), and variation selectors (`U+FE00..=U+FE0F`, `U+E0100..=U+E01EF`) before `preserve_first_grapheme`, normalizing empty or width-0 results to `" "`.
+- [x] Multi-codepoint VS16/ZWJ clusters (`"⚠️"`, `"👨‍👩‍👧"`) do not produce width divergence (`UnicodeWidthStr::width` > `vt100` cell width) or consume adjacent cells in `render_to_buffer`.
+- [x] Existing and new tests in `tests/term.rs` verify BIDI/format/soft-hyphen/VS16/ZWJ sanitization while keeping Arabic harakat (`"بِ"`, `"لَّ"`, `"شُ"`) intact.
 
 **Verification:**
-- [x] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Tests pass: `cargo test --test term`
 - [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** None
 
 **Files likely touched:**
 - `src/term/screen.rs`
-- `src/ui/panes.rs` (only if border/clipping guard needed; inspect during implementation)
 - `tests/term.rs`
-- `tests/ui_snapshots.rs`
 
-**Estimated scope:** Small (2-3 files)
-
----
-
-## Checkpoint: After Task 1
-- [x] `cargo test --test term --test ui_snapshots` passes
-- [x] `cargo check --all-targets` succeeds without warnings
-- [x] Wide/zero-width/Arabic boundary rendering tests pass and preserve adjacent pane borders
+**Estimated scope:** Small (2 files)
 
 ---
 
-## Task 2: Synchronize `AttachSession` screen resizing with actual PTY `RESIZE` transmission
+## Task 2: Implement `SyncCrosstermBackend<W>` and wire it into `run_tui`
 
-**Description:** Refactor `AttachSession` in `src/term/session.rs` so `self.screen` always reflects the true PTY size rather than prematurely resizing during debounced drags or in `Observing` mode. Only call `self.screen.resize(cols, rows)` when `self.state == SessionState::Active` and `ch.send_resize(cols, rows)` is actually sent (in `request_resize` when un-debounced, in `flush_pending_resize` when the 50 ms debounce expires, and in a new `flush_pending_resize_now` method for drag completion). Skip redundant `send_resize` calls when `(cols, rows) == self.screen.size()` (clearing `pending_resize`). In `attach_observe`, initialize `self.screen` to `(res.terminal.cols, res.terminal.rows)` when non-zero. Add `take_over_at(&mut self, client: &FramedClient, cols: u16, rows: u16)` (with `take_over` delegating using `self.screen.size()`) so taking over an observed pane attaches at the pane's current inner size and syncs `self.screen`.
+**Description:** Create `src/ui/backend.rs` defining `SyncCrosstermBackend<W: io::Write>` wrapping `ratatui::backend::CrosstermBackend<W>`, export `pub mod backend;` in `src/ui/mod.rs`, and wire `SyncCrosstermBackend::new(io::stdout())` into `run_tui` / `run_tui_loop` in `src/ui/event_loop.rs`. Implement `ratatui::backend::Backend` for `SyncCrosstermBackend<W>` so that:
+1. `draw` wraps the frame in `crossterm::terminal::BeginSynchronizedUpdate` (`\x1b[?2026h`) and `EndSynchronizedUpdate` (`\x1b[?2026l`).
+2. `draw` queues `MoveTo(x, y)` whenever `prev_non_ascii || !matches!(last_pos, Some(p) if x == p.x + 1 && y == p.y)`, where `prev_non_ascii` is set to `!cell.symbol().is_ascii()` after each emitted cell—forcing explicit cursor repositioning immediately after any non-ASCII glyph while keeping `MoveTo` elision for consecutive ASCII runs.
+3. Style, color, underline-color (`ratatui` default feature), and modifier diffing (including `BOLD`/`DIM` `NormalIntensity` interaction) are handled cleanly via a small helper without duplicating verbose chains, and all remaining `Backend` methods (`hide_cursor`, `show_cursor`, `get_cursor_position`, `set_cursor_position`, `clear`, `clear_region`, `append_lines`, `size`, `window_size`, `flush`) delegate to `self.inner`.
+Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 
 **Acceptance criteria:**
-- [x] `AttachSession::request_resize` does NOT resize `self.screen` when `state != SessionState::Active` or when debounced (`can_send == false`), and avoids sending duplicate `RESIZE` frames when size is unchanged.
-- [x] `AttachSession::flush_pending_resize` resizes `self.screen` when `ch.send_resize` succeeds, and `flush_pending_resize_now` sends any pending resize immediately (bypassing the 50 ms debounce) and resizes `self.screen`.
-- [x] `AttachSession::attach_observe` initializes `self.screen` from non-zero `res.terminal.cols`/`rows`, and `take_over_at` attaches at `(cols, rows)` and resizes `self.screen` to `(cols, rows)`.
+- [ ] `SyncCrosstermBackend<W: io::Write>` implements `ratatui::backend::Backend` and delegates all lifecycle/cursor/clear/size/flush methods to `CrosstermBackend<W>`.
+- [ ] `SyncCrosstermBackend::draw` wraps every frame in `\x1b[?2026h` ... `\x1b[?2026l`, emits explicit `MoveTo(x, y)` after every non-ASCII cell (`!cell.symbol().is_ascii()`), and elides `MoveTo` for consecutive ASCII runs.
+- [ ] `run_tui` and `run_tui_loop` in `src/ui/event_loop.rs` use `SyncCrosstermBackend`.
+- [ ] Unit tests in `src/ui/backend.rs` verify `MoveTo` after non-ASCII, `MoveTo` elision on ASCII, synchronized update sequences, and modifier/color diffing.
 
 **Verification:**
-- [x] Tests pass: `cargo test --test term`
-- [x] Build succeeds: `cargo check --all-targets`
+- [ ] Tests pass: `cargo test --lib ui::backend`
+- [ ] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
 **Files likely touched:**
-- `src/term/session.rs`
-- `tests/term.rs`
-
-**Estimated scope:** Small (2 files)
-
----
-
-## Task 3: Coordinate `EndDrag`, `sync_pane_sizes`, `tick`, `Spawn`, `TakeOver`, and `"size"` events in `TuiApp` and `event_loop`
-
-**Description:** Update `src/ui/app.rs` and `src/ui/event_loop.rs` so layout changes, divider drags, outer terminal resizes, splits, and take-overs stay synchronized with `AttachSession` and trigger timely redraws. In `src/ui/app.rs`, flush pending resizes immediately on `MouseAction::EndDrag` (via `flush_pending_resize_now`), update `sync_pane_sizes` to skip non-`Active` sessions and set `self.dirty = true` whenever any session's `screen.size()` changes (returning `bool` if any resized), and ensure `DragDivider` / `EndDrag` / `sync_pane_sizes` cooperate cleanly. In `src/ui/event_loop.rs`, set `app.dirty = true` when `tick` flushes a pending resize, call `app.sync_pane_sizes(now)` after `AppAction::Spawn` places a terminal (so a split sibling pane that shrank resizes immediately), update `AppAction::TakeOver` to pass `pane_inner_size` via `take_over_at`, and in `handle_core_event_with_framed` resize `Observing` sessions on `"size"` events when `!sess.resize_notifications`.
-
-**Acceptance criteria:**
-- [x] `MouseAction::EndDrag` flushes pending resizes on active sessions immediately and marks `app.dirty = true` if any flushed.
-- [x] `TuiApp::sync_pane_sizes` skips non-`Active` sessions and marks `self.dirty = true` whenever any `Active` session screen is resized; `tick` sets `app.dirty = true` when `flush_pending_resize` returns `Ok(true)`.
-- [x] `AppAction::Spawn` (including `SplitPane`) syncs sibling pane sizes, `AppAction::TakeOver` uses `pane_inner_size`, and `"size"` events update `Observing` sessions without `resize_notifications`.
-
-**Verification:**
-- [x] Tests pass: `cargo test --test term --test ui_snapshots`
-- [x] Build succeeds: `cargo check --all-targets`
-
-**Dependencies:** Task 2
-
-**Files likely touched:**
-- `src/ui/app.rs`
+- `src/ui/backend.rs`
+- `src/ui/mod.rs`
 - `src/ui/event_loop.rs`
 
-**Estimated scope:** Small (2 files)
+**Estimated scope:** Small (3 files)
 
 ---
 
-## Checkpoint: After Tasks 2-3
-- [x] `cargo test` passes across all unit and integration targets
-- [x] `cargo check --all-targets` succeeds without warnings
-- [x] Divider drag, `EndDrag`, split spawn, outer resize, and `TakeOver` flows all keep PTY and `Vt100Screen` sizes in sync
+## Checkpoint: After Tasks 1-2
+- [ ] `cargo check --all-targets` succeeds without warnings
+- [ ] `cargo test --lib` and `cargo test --test term` pass
+- [ ] `Vt100Screen::cell` sanitization and `SyncCrosstermBackend` behavior verified independently
 
 ---
 
-## Task 4: Add comprehensive side-by-side resize regression tests and pass all quality gates
+## Task 3: Add ANSI byte-stream & side-by-side divider-drag integration tests
 
-**Description:** Add automated regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` (using `TestBackend`, `Buffer::diff`, and `FakeHcServer`) covering the full bug report: two side-by-side panes resized via divider drag + `EndDrag`, horizontal split spawn shrinking an existing pane, outer terminal resize, observing-mode pane preservation during resize + `TakeOver`, and wide/zero-width/Arabic characters near the pane divider across successive `Buffer::diff` frames. Run the full verification suite (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`).
+**Description:** Add integration tests in `tests/term.rs` and `tests/ui_snapshots.rs` exercising `ratatui::Terminal` backed by `SyncCrosstermBackend<SharedVecWriter>` (capturing raw ANSI bytes into `Vec<u8>`) alongside `Vt100Screen`, `TuiApp`, sidebar/tabs, and `MouseAction::DragDivider` / `EndDrag`. Verify that:
+- Explicit `MoveTo` ANSI sequences (`\x1b[row;colH`) are emitted immediately after non-ASCII glyphs (`⚠️` sanitized to `⚠`, Nerd Font/PUA e.g. `\u{e0b0}`, `❯`, Arabic harakat, `│`) before the `│` divider and right-pane content on every row during divider dragging.
+- Pure ASCII runs across consecutive cells elide redundant `MoveTo` sequences.
+- Synchronized output sequences (`\x1b[?2026h` and `\x1b[?2026l`) bracket each rendered frame.
+- Format/BIDI/soft-hyphen/VS16 inputs do not corrupt pane dividers or Arabic harakat clusters across drag updates.
 
 **Acceptance criteria:**
-- [x] `tests/term.rs` verifies `AttachSession` debounce/flush/observing/take-over resize behavior and `Vt100Screen` wide/zero-width/Arabic/resize invariants.
-- [x] `tests/ui_snapshots.rs` verifies side-by-side panes preserve intact `│` borders, adjacent pane text, and valid `Buffer::diff` updates across divider drag, horizontal split spawn, and outer resize.
-- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` all pass with zero failures or warnings.
+- [ ] `tests/ui_snapshots.rs` tests `Terminal<SyncCrosstermBackend<_>>` across side-by-side divider drag with Nerd Font/PUA, `⚠️`, `❯`, Arabic, sidebar, and tabs, asserting exact `\x1b[row;colH` emission after non-ASCII cells, ASCII `MoveTo` elision, and `\x1b[?2026h`/`\x1b[?2026l` framing.
+- [ ] `tests/term.rs` tests `Vt100Screen` format/BIDI/soft-hyphen/VS16/ZWJ sanitization and Arabic harakat preservation end-to-end with `Buffer` and `SyncCrosstermBackend`.
 
 **Verification:**
-- [x] Tests pass: `cargo test`
-- [x] Formatting passes: `cargo fmt --all -- --check`
-- [x] Lints pass: `cargo clippy --all-targets -- -D warnings`
+- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
 
-**Dependencies:** Task 3
+**Dependencies:** Task 2
 
 **Files likely touched:**
 - `tests/term.rs`
@@ -109,7 +84,32 @@
 
 ---
 
+## Task 4: Run full quality gates and reinstall `htui`
+
+**Description:** Run the complete workspace test suite, formatter check, and strict clippy check across all targets, then reinstall the updated `htui` binary locally with `cargo install --path . --locked`.
+
+**Acceptance criteria:**
+- [ ] `cargo test` passes with zero failures or skipped assertions.
+- [ ] `cargo fmt --all -- --check` passes with no formatting diffs.
+- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [ ] `cargo install --path . --locked` succeeds.
+
+**Verification:**
+- [ ] `cargo test`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo clippy --all-targets -- -D warnings`
+- [ ] `cargo install --path . --locked`
+
+**Dependencies:** Task 3
+
+**Files likely touched:**
+- None (verification and local binary install)
+
+**Estimated scope:** XS (0 files)
+
+---
+
 ## Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
-- [x] Ready for human review / `build-tasks`
+- [ ] All acceptance criteria met
+- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
+- [ ] Updated `htui` binary installed and ready for manual verification in Ghostty

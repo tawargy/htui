@@ -863,3 +863,67 @@ async fn observing_frame_resize_vs_size_event_and_control_char_sanitization() {
         (96, 28)
     );
 }
+
+#[test]
+fn vt100_screen_format_vs_and_zwj_sanitization() {
+    use unicode_width::UnicodeWidthStr;
+
+    let mut screen = Vt100Screen::new(30, 5, 100);
+    // Row 0: VS16 warning sign followed immediately by 'X', plus ZWJ family emoji followed by 'Y'
+    screen.process("\u{26A0}\u{FE0F}X \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}Y".as_bytes());
+    screen.process(b"\r\n");
+    // Row 1: Soft hyphen, BIDI overrides/isolates, Cf format chars attached to ASCII and standalone
+    screen.process("a\u{00AD}b\u{202E}c\u{2066}d\u{200F}\u{061C}\u{FEFF}e".as_bytes());
+    screen.process(b"\r\n");
+    // Row 2: Arabic with harakat (Mn combining marks) must stay intact
+    screen.process("بِ لَّ شُ".as_bytes());
+
+    // Row 0 checks: ⚠️ collapses to ⚠ (width 1) and does not eat 'X'
+    let warn_cell = screen.cell(0, 0).expect("warn cell");
+    assert_eq!(warn_cell.symbol, "\u{26A0}");
+    assert_eq!(UnicodeWidthStr::width(warn_cell.symbol.as_str()), 1);
+    let x_cell = screen.cell(0, 1).expect("X cell");
+    assert_eq!(x_cell.symbol, "X");
+
+    // ZWJ sequence has ZWJ stripped cleanly and does not exceed vt100's 2-col cell width
+    let zwj_cell_3 = screen.cell(0, 3).expect("zwj cell 3");
+    assert_eq!(zwj_cell_3.symbol, "\u{1F468}");
+    assert!(!zwj_cell_3.symbol.contains('\u{200D}'));
+    assert_eq!(UnicodeWidthStr::width(zwj_cell_3.symbol.as_str()), 2);
+    let zwj_cell_5 = screen.cell(0, 5).expect("zwj cell 5");
+    assert_eq!(zwj_cell_5.symbol, "\u{1F469}");
+    assert!(!zwj_cell_5.symbol.contains('\u{200D}'));
+
+    // Render row 0 into Buffer and verify 'X' and 'Y' sit in their exact columns
+    let area = Rect::new(0, 0, 30, 5);
+    let mut buf = Buffer::empty(area);
+    screen.render_to_buffer(area, &mut buf);
+    assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "\u{26A0}");
+    assert_eq!(buf.cell((1, 0)).unwrap().symbol(), "X");
+    assert_eq!(buf.cell((3, 0)).unwrap().symbol(), "\u{1F468}");
+    assert_eq!(buf.cell((4, 0)).unwrap().symbol(), " ");
+    assert_eq!(buf.cell((5, 0)).unwrap().symbol(), "\u{1F469}");
+    assert_eq!(buf.cell((6, 0)).unwrap().symbol(), " ");
+    assert_eq!(buf.cell((7, 0)).unwrap().symbol(), "\u{1F467}");
+    assert_eq!(buf.cell((8, 0)).unwrap().symbol(), " ");
+    assert_eq!(buf.cell((9, 0)).unwrap().symbol(), "Y");
+
+    // Row 1 checks: no Cf / U+00AD / VS codepoints remain in any cell
+    for col in 0..10 {
+        let sym = &screen.cell(1, col).expect("row1 cell").symbol;
+        assert!(
+            !sym.chars().any(|c| matches!(
+                c,
+                '\u{00AD}' | '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FE00}'..='\u{FE0F}'
+            )),
+            "format/VS char leaked at col {col}: {sym:?}"
+        );
+    }
+    assert_eq!(screen.row_text(1), "abcde");
+
+    // Row 2 checks: Arabic harakat remain intact
+    let row2 = screen.row_text(2);
+    assert!(row2.contains("بِ"), "got {row2:?}");
+    assert!(row2.contains("لَّ"), "got {row2:?}");
+    assert!(row2.contains("شُ"), "got {row2:?}");
+}

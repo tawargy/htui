@@ -110,13 +110,22 @@ impl ScreenModel for Vt100Screen {
         let symbol = if raw.is_empty() {
             " ".to_string()
         } else {
-            let candidate = preserve_first_grapheme(&raw);
-            if candidate.chars().any(char::is_control)
-                || UnicodeWidthStr::width(candidate.as_str()) == 0
-            {
+            // Strip control, format (Cf/soft-hyphen), and variation-selector codepoints
+            // before extracting the first grapheme so ZWJ/VS16 clusters cannot merge
+            // multiple wide glyphs or skew width between vt100 and ratatui.
+            let cleaned: String = raw
+                .chars()
+                .filter(|&c| !c.is_control() && !is_invisible_format_or_vs(c))
+                .collect();
+            if cleaned.is_empty() {
                 " ".to_string()
             } else {
-                candidate
+                let candidate = preserve_first_grapheme(&cleaned);
+                if UnicodeWidthStr::width(candidate.as_str()) == 0 {
+                    " ".to_string()
+                } else {
+                    candidate
+                }
             }
         };
 
@@ -249,4 +258,34 @@ fn map_vt100_mouse_encoding(e: vt100::MouseProtocolEncoding) -> MouseProtocolEnc
         vt100::MouseProtocolEncoding::Utf8 => MouseProtocolEncoding::Utf8,
         vt100::MouseProtocolEncoding::Sgr => MouseProtocolEncoding::Sgr,
     }
+}
+
+/// Returns true for soft hyphen, Unicode `Cf` format characters (BIDI overrides/isolates,
+/// zero-width joiners/spaces, BOM), and variation selectors (`VS1..=VS16`, `VS17..=VS256`).
+fn is_invisible_format_or_vs(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
+    )
 }
