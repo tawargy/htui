@@ -146,7 +146,7 @@ async fn run_tui_loop(
         // Handle reconnection if disconnected
         if !app.connected {
             let now = Instant::now();
-            if reconnect_at.map_or(true, |t| now >= t) {
+            if reconnect_at.is_none_or(|t| now >= t) {
                 if let (Ok(new_rpc), Ok(new_framed), Ok((snap, new_ev))) = (
                     RpcClient::connect(socket_path).await,
                     FramedClient::connect(socket_path).await,
@@ -397,7 +397,7 @@ pub async fn reconcile_startup_layouts(
         .unwrap_or_default();
     if app
         .focused_pane
-        .map_or(true, |pid| !active_pane_ids.contains(&pid))
+        .is_none_or(|pid| !active_pane_ids.contains(&pid))
     {
         app.focused_pane = active_pane_ids.into_iter().next();
     }

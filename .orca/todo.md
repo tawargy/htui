@@ -90,16 +90,16 @@ Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/
 **Description:** Run the full workspace test suite, formatter check, and strict clippy check across all targets, then reinstall the updated `htui` binary locally using `cargo install --path . --locked`.
 
 **Acceptance criteria:**
-- [ ] `cargo test` passes with zero failures or skipped assertions.
-- [ ] `cargo fmt --all -- --check` passes with zero formatting diffs.
-- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
-- [ ] `cargo install --path . --locked` succeeds.
+- [x] `cargo test` passes with zero failures or skipped assertions.
+- [x] `cargo fmt --all -- --check` passes with zero formatting diffs.
+- [x] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [x] `cargo install --path . --locked` succeeds.
 
 **Verification:**
-- [ ] `cargo test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo install --path . --locked`
+- [x] `cargo test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --all-targets -- -D warnings`
+- [x] `cargo install --path . --locked`
 
 **Dependencies:** Task 3
 
@@ -111,6 +111,6 @@ Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/
 ---
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [ ] Updated `htui` binary installed and ready for manual verification with `nvim` in GNOME Terminal / Ghostty
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] Updated `htui` binary installed and ready for manual verification with `nvim` in GNOME Terminal / Ghostty

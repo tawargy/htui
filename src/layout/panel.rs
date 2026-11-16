@@ -340,7 +340,7 @@ impl SpaceLayout {
     pub fn ensure_valid_active_panel(&mut self) {
         if self
             .active_panel
-            .map_or(true, |id| !self.panels.iter().any(|p| p.id == id))
+            .is_none_or(|id| !self.panels.iter().any(|p| p.id == id))
         {
             self.active_panel = self.panels.first().map(|p| p.id);
         }

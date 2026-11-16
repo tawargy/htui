@@ -143,7 +143,7 @@ impl ScreenModel for AlacrittyScreen {
             .contains(alacritty_terminal::term::TermMode::SHOW_CURSOR)
             && display_offset == 0;
         let point = grid.cursor.point;
-        let col = (point.column.0.max(0) as u16).min(self.logical_cols.saturating_sub(1));
+        let col = (point.column.0 as u16).min(self.logical_cols.saturating_sub(1));
         let row = (point.line.0.max(0) as u16).min(self.logical_rows.saturating_sub(1));
         (col, row, visible)
     }

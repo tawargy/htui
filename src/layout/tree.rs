@@ -161,7 +161,7 @@ impl SplitTree {
                 continue;
             }
             let dist = dx * dx + dy * dy;
-            if best.map_or(true, |(_, b)| dist < b) {
+            if best.is_none_or(|(_, b)| dist < b) {
                 best = Some((*id, dist));
             }
         }
