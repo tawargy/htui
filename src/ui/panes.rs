@@ -12,6 +12,7 @@ use crate::ui::theme::Theme;
 
 pub const TAKEOVER_LABEL: &str = " [Take over] ";
 pub const SPAWN_PANE_LABEL: &str = " [+ New Terminal (Ctrl+B n)] ";
+pub const UNATTACHED_PANE_LABEL: &str = " [connecting / unattached] ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneHitbox {
@@ -63,6 +64,8 @@ pub fn render_panes(
         let mut title_spans = Vec::new();
         if term_addr.is_none() {
             title_spans.push(Span::raw(" (empty) "));
+        } else if session.is_none() {
+            title_spans.push(Span::raw(UNATTACHED_PANE_LABEL));
         }
 
         let mut takeover_rect = None;
@@ -114,7 +117,7 @@ pub fn render_panes(
                     }
                 }
             }
-        } else {
+        } else if term_addr.is_none() {
             let lbl_w = (SPAWN_PANE_LABEL.len() as u16).min(inner.width);
             if inner.width >= 4 && inner.height >= 1 {
                 let btn_x = inner.x + inner.width.saturating_sub(lbl_w) / 2;
@@ -124,6 +127,13 @@ pub fn render_panes(
                 Paragraph::new(Span::styled(SPAWN_PANE_LABEL, Theme::tab_new_terminal()))
                     .render(btn_area, buf);
             }
+        } else if inner.width >= 4 && inner.height >= 1 {
+            let lbl_w = (UNATTACHED_PANE_LABEL.len() as u16).min(inner.width);
+            let lbl_x = inner.x + inner.width.saturating_sub(lbl_w) / 2;
+            let lbl_y = inner.y + inner.height / 2;
+            let lbl_area = Rect::new(lbl_x, lbl_y, lbl_w, 1);
+            Paragraph::new(Span::styled(UNATTACHED_PANE_LABEL, Theme::border_normal()))
+                .render(lbl_area, buf);
         }
 
         geom.panes.push(PaneHitbox {

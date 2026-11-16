@@ -986,6 +986,10 @@ fn close_pane_named_space_empty_last_pane_kills_unattached_terminals_and_closes_
             AppAction::Kill("t-live-2".into()),
             AppAction::Remove("t-live-2".into()),
             AppAction::RemoveLayout("api".into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t-web".into(),
+            },
         ]
     );
     assert!(!app.model.terminals.contains_key("t-fin-1"));
@@ -1140,6 +1144,10 @@ fn close_pane_unassigned_empty_last_pane_kills_unattached_and_switches_to_named_
             AppAction::Kill("t-u2".into()),
             AppAction::Remove("t-u2".into()),
             AppAction::RemoveLayout(UNASSIGNED_SPACE.into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t-api".into(),
+            },
         ]
     );
     assert!(!app.model.terminals.contains_key("t-u1"));
@@ -1186,7 +1194,13 @@ fn close_pane_unassigned_empty_last_pane_without_terminals_switches_to_named_spa
 
     assert_eq!(
         actions,
-        vec![AppAction::RemoveLayout(UNASSIGNED_SPACE.into())]
+        vec![
+            AppAction::RemoveLayout(UNASSIGNED_SPACE.into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t-api".into(),
+            },
+        ]
     );
     assert!(!app.layouts.spaces.contains_key(UNASSIGNED_SPACE));
     assert_eq!(app.active_space, "api");
@@ -2676,6 +2690,10 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
             AppAction::Kill("t1".into()),
             AppAction::Remove("t1".into()),
             AppAction::RemoveLayout("api".into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t4".into(),
+            },
         ]
     );
     for action in api_actions {
@@ -2783,6 +2801,10 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
         vec![
             AppAction::Remove("t4".into()),
             AppAction::RemoveLayout("jobs".into()),
+            AppAction::AttachTerminal {
+                pane_id: web_p2,
+                terminal: "t3".into(),
+            },
         ]
     );
     for action in jobs_actions {
@@ -2911,6 +2933,10 @@ async fn close_pane_empty_last_pane_with_unattached_dispatches_against_fake_hc_a
             AppAction::Kill("t-api".into()),
             AppAction::Remove("t-api".into()),
             AppAction::RemoveLayout("api".into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t-web".into(),
+            },
         ]
     );
     for action in api_actions {
@@ -2946,6 +2972,10 @@ async fn close_pane_empty_last_pane_with_unattached_dispatches_against_fake_hc_a
             AppAction::Remove("t-u1".into()),
             AppAction::Remove("t-u2".into()),
             AppAction::RemoveLayout(UNASSIGNED_SPACE.into()),
+            AppAction::AttachTerminal {
+                pane_id: 1,
+                terminal: "t-web".into(),
+            },
         ]
     );
     for action in u_actions {
@@ -3912,4 +3942,395 @@ async fn reconcile_startup_layouts_places_external_terminals_into_isolated_panel
         vec!["t-d".to_string()]
     );
     assert_eq!(work_after.active_panel, Some(work_after.panels[0].id));
+}
+
+#[test]
+fn render_panes_unattached_placed_terminal_omits_spawn_button() {
+    use herdr_tui::ui::panes::SPAWN_PANE_LABEL;
+
+    let (tree, pane_id) = SplitTree::with_single(Some(TermRef {
+        address: "t-placed".into(),
+    }));
+    let sessions = HashMap::new();
+    let area = Rect::new(0, 0, 80, 20);
+    let mut buf = Buffer::empty(area);
+
+    let geom = render_panes(area, &mut buf, &tree, Some(pane_id), &sessions, None);
+    let rendered = buffer_to_string(&buf);
+
+    assert_eq!(geom.panes.len(), 1);
+    assert_eq!(
+        geom.panes[0].spawn_btn, None,
+        "placed unattached pane must not emit a clickable spawn_btn"
+    );
+    assert!(
+        !rendered.contains(SPAWN_PANE_LABEL.trim()),
+        "placed unattached pane must not render SPAWN_PANE_LABEL, got:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("[connecting / unattached]"),
+        "expected [connecting / unattached] indicator, got:\n{rendered}"
+    );
+
+    // Also verify clicking the center of an unattached placed pane in TuiApp does not open SpawnDialog
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let pid = app.focused_pane.expect("focused pane");
+    app.current_tree_mut().set_terminal(
+        pid,
+        Some(TermRef {
+            address: "t-placed".into(),
+        }),
+    );
+    let now = std::time::Instant::now();
+    let app_area = Rect::new(0, 0, 100, 30);
+    let mut app_buf = Buffer::empty(app_area);
+    app.render(app_area, &mut app_buf, now);
+    let hitbox = app.last_geom.panes.first().expect("pane hitbox");
+    assert_eq!(hitbox.spawn_btn, None);
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: hitbox.rect.x + hitbox.rect.width / 2,
+        row: hitbox.rect.y + hitbox.rect.height / 2,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse_event(click, now);
+    assert!(
+        app.dialog.is_none(),
+        "clicking unattached placed pane must not open SpawnDialog"
+    );
+}
+
+#[test]
+fn switch_space_callers_attach_unattached_active_panel_terminals() {
+    use herdr_tui::model::tree::UNASSIGNED_SPACE;
+    use herdr_tui::ui::sidebar::SidebarItem;
+
+    let now = std::time::Instant::now();
+
+    // Setup app on UNASSIGNED_SPACE with "api" containing an unattached terminal "t-api"
+    let mut app = TuiApp::new(Config::default(), None);
+    let mut t_api = Terminal {
+        address: "t-api".into(),
+        state: "live".into(),
+        argv: vec!["zsh".into()],
+        reported: true,
+        ..Default::default()
+    };
+    t_api.labels.insert("space".into(), "api".into());
+    let mut t_web = Terminal {
+        address: "t-web".into(),
+        state: "live".into(),
+        argv: vec!["sh".into()],
+        reported: true,
+        ..Default::default()
+    };
+    t_web.labels.insert("space".into(), "web".into());
+    app.model.terminals.insert("t-api".into(), t_api);
+    app.model.terminals.insert("t-web".into(), t_web);
+    app.model.declared_spaces.insert("api".into());
+    app.model.declared_spaces.insert("web".into());
+    let (api_space, _, api_pane) = SpaceLayout::with_single(Some(TermRef {
+        address: "t-api".into(),
+    }));
+    let (web_space, _, web_pane) = SpaceLayout::with_single(Some(TermRef {
+        address: "t-web".into(),
+    }));
+    app.layouts.spaces.insert("api".into(), api_space);
+    app.layouts.spaces.insert("web".into(), web_space);
+    app.refresh_sidebar();
+
+    // 1. Switching to "api" via sidebar Enter emits AttachTerminal for t-api
+    let api_idx = app
+        .sidebar
+        .visible_items
+        .iter()
+        .position(|i| matches!(i, SidebarItem::Space { name, .. } if name == "api"))
+        .expect("api row in sidebar");
+    app.sidebar_focused = true;
+    app.sidebar.selected = api_idx;
+    let enter_actions = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now,
+    );
+    assert_eq!(app.active_space, "api");
+    assert!(
+        enter_actions.contains(&AppAction::AttachTerminal {
+            pane_id: api_pane,
+            terminal: "t-api".into(),
+        }),
+        "sidebar Enter switch_space must emit AttachTerminal, got: {enter_actions:?}"
+    );
+
+    // 2. Switching to "web" via sidebar mouse click emits AttachTerminal for t-web
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf, now);
+    let (spaces_area, _) = app.last_sidebar_areas.expect("sidebar areas");
+    let web_idx = app
+        .sidebar
+        .visible_items
+        .iter()
+        .position(|i| matches!(i, SidebarItem::Space { name, .. } if name == "web"))
+        .expect("web row in sidebar");
+    let click_actions = app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: spaces_area.x + 2,
+            row: spaces_area.y + 1 + web_idx as u16,
+            modifiers: KeyModifiers::NONE,
+        },
+        now,
+    );
+    assert_eq!(app.active_space, "web");
+    assert!(
+        click_actions.contains(&AppAction::AttachTerminal {
+            pane_id: web_pane,
+            terminal: "t-web".into(),
+        }),
+        "sidebar click switch_space must emit AttachTerminal, got: {click_actions:?}"
+    );
+
+    // 3. ClosePane on empty UNASSIGNED_SPACE switching to next_named_space ("api") emits AttachTerminal
+    app.switch_space(UNASSIGNED_SPACE.into());
+    app.refresh_sidebar();
+    let ctrl_b = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let key_x = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+    app.handle_key(ctrl_b, now);
+    let close_actions = app.handle_key(key_x, now + std::time::Duration::from_millis(20));
+    assert_eq!(app.active_space, "api");
+    assert!(
+        close_actions.contains(&AppAction::AttachTerminal {
+            pane_id: api_pane,
+            terminal: "t-api".into(),
+        }),
+        "ClosePane switch to named space must emit AttachTerminal, got: {close_actions:?}"
+    );
+}
+
+#[tokio::test]
+async fn startup_and_event_reconciliation_attaches_active_panel_terminals() {
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::FramedClient;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::hc::types::{EventPayload, RunParams};
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::event_loop::{
+        attach_active_panel_terminals, handle_core_event_with_framed,
+        reconcile_and_sync_live_terminals, reconcile_startup_layouts,
+    };
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut labels_api = HashMap::new();
+    labels_api.insert("space".into(), "api".into());
+    let t_api = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".into()],
+            labels: labels_api,
+            ..Default::default()
+        })
+        .await
+        .expect("spawn t_api");
+
+    let mut labels_web = HashMap::new();
+    labels_web.insert("space".into(), "web".into());
+    let t_web = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".into()],
+            labels: labels_web,
+            ..Default::default()
+        })
+        .await
+        .expect("spawn t_web");
+
+    // 1. Startup reconciliation + attach attaches t_api in active space "api"
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    app.model
+        .terminals
+        .insert(t_api.address.clone(), t_api.clone());
+    app.model
+        .terminals
+        .insert(t_web.address.clone(), t_web.clone());
+    reconcile_startup_layouts(&mut app, Some(&rpc), &store, Some("api")).await;
+    attach_active_panel_terminals(&mut app, Some(&framed)).await;
+
+    assert!(
+        matches!(
+            app.sessions.get(&t_api.address).map(|s| &s.state),
+            Some(SessionState::Active)
+        ),
+        "startup reconciliation must attach active-panel terminal {}",
+        t_api.address
+    );
+    assert!(
+        !app.sessions.contains_key(&t_web.address),
+        "inactive space terminal should not attach until activated"
+    );
+
+    // 2. Core event reconciliation attaches when a new terminal is placed into empty active panel
+    app.switch_space("jobs".into());
+    app.model.declared_spaces.insert("jobs".into());
+    let mut labels_jobs = HashMap::new();
+    labels_jobs.insert("space".into(), "jobs".into());
+    let t_jobs = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".into()],
+            labels: labels_jobs,
+            ..Default::default()
+        })
+        .await
+        .expect("spawn t_jobs");
+
+    handle_core_event_with_framed(
+        EventPayload {
+            seq: 1,
+            terminal: Some(t_jobs.address.clone()),
+            event_type: "created".into(),
+            data: serde_json::to_value(&t_jobs).unwrap(),
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    assert!(
+        matches!(
+            app.sessions.get(&t_jobs.address).map(|s| &s.state),
+            Some(SessionState::Active)
+        ),
+        "event reconciliation must attach terminal placed into active panel"
+    );
+
+    // 3. Reconnect / Missed reconciliation attaches into active panel
+    let t_missed = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".into()],
+            ..Default::default()
+        })
+        .await
+        .expect("spawn t_missed");
+    app.switch_space(herdr_tui::model::tree::UNASSIGNED_SPACE.into());
+    app.model
+        .terminals
+        .insert(t_missed.address.clone(), t_missed.clone());
+    reconcile_and_sync_live_terminals(&mut app, Some(&rpc), Some(&framed), &store).await;
+    assert!(
+        matches!(
+            app.sessions.get(&t_missed.address).map(|s| &s.state),
+            Some(SessionState::Active)
+        ),
+        "reconcile_and_sync_live_terminals must attach terminal reconciled into active panel"
+    );
+}
+
+#[tokio::test]
+async fn spawn_with_cleared_space_from_named_space_switches_to_unassigned_and_preserves_terminal() {
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::FramedClient;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::model::tree::UNASSIGNED_SPACE;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let api_pane_id = app.focused_pane.unwrap();
+
+    // Case A: Spawn with cleared space ("") while active_space == "api" (empty)
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: String::new(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: api_pane_id,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+
+    assert_eq!(app.active_space, UNASSIGNED_SPACE);
+    assert!(!app.layouts.spaces.contains_key("api"));
+    assert!(!app.model.declared_spaces.contains("api"));
+    let unassigned_addrs = app.layouts.spaces[UNASSIGNED_SPACE].terminal_addresses();
+    assert_eq!(unassigned_addrs.len(), 1);
+    let spawned1 = unassigned_addrs[0].clone();
+    assert!(matches!(
+        app.sessions.get(&spawned1).map(|s| &s.state),
+        Some(SessionState::Active)
+    ));
+
+    // Must not be pruned on refresh_sidebar / prune_empty_spaces
+    let emptied = app.prune_empty_spaces();
+    assert!(emptied.is_empty());
+    app.refresh_sidebar();
+    assert_eq!(
+        app.layouts.spaces[UNASSIGNED_SPACE].terminal_addresses(),
+        vec![spawned1.clone()]
+    );
+
+    // Case B: Named space "web" already has t-web; spawning with UNASSIGNED_SPACE switches to
+    // UNASSIGNED_SPACE with SpawnTarget::NewPanel without overwriting "web"
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: "web".into(),
+            target: SpawnTarget::NewPanel,
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    assert_eq!(app.active_space, "web");
+    let web_panel_id = app.active_panel_id().unwrap();
+    let web_pane_id = app.focused_pane.unwrap();
+    let web_addrs = app.layouts.spaces["web"].terminal_addresses();
+    assert_eq!(web_addrs.len(), 1);
+
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: UNASSIGNED_SPACE.into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: web_panel_id,
+                pane_id: web_pane_id,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+
+    assert_eq!(app.active_space, UNASSIGNED_SPACE);
+    assert_eq!(app.layouts.spaces["web"].terminal_addresses(), web_addrs);
+    assert_eq!(app.layouts.spaces[UNASSIGNED_SPACE].panels.len(), 2);
 }

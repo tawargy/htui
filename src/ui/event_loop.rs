@@ -112,6 +112,7 @@ async fn run_tui_loop(
             initial_space_name.as_deref(),
         )
         .await;
+        attach_active_panel_terminals(&mut app, framed.as_ref()).await;
     } else {
         init_disconnected_startup(&mut app, Instant::now());
     }
@@ -169,7 +170,14 @@ async fn run_tui_loop(
                     backoff_secs = 1;
                     reconnect_at = None;
                     prune_and_sync_empty_spaces(&mut app, rpc.as_ref(), &store).await;
-                    reconcile_and_sync_live_terminals(&mut app, rpc.as_ref(), &store).await;
+                    reconcile_and_sync_live_terminals(
+                        &mut app,
+                        rpc.as_ref(),
+                        framed.as_ref(),
+                        &store,
+                    )
+                    .await;
+                    attach_active_panel_terminals(&mut app, framed.as_ref()).await;
                     app.set_toast("Reconnected to hc core", now);
                     app.refresh_sidebar();
                 } else {
@@ -223,13 +231,27 @@ async fn run_tui_loop(
                 let now = Instant::now();
                 match ev_msg {
                     Some(Ok(Some(EventMessage::Event(ev)))) => {
-                        handle_core_event(ev, &mut app, rpc.as_ref(), &store).await;
+                        handle_core_event_with_framed(
+                            ev,
+                            &mut app,
+                            rpc.as_ref(),
+                            framed.as_ref(),
+                            &store,
+                        )
+                        .await;
                     }
                     Some(Ok(Some(EventMessage::Missed(mut m)))) => {
                         m.terminals.retain(|t| t.is_live());
                         app.model = apply(app.model, ModelInput::Missed(m));
                         prune_and_sync_empty_spaces(&mut app, rpc.as_ref(), &store).await;
-                        reconcile_and_sync_live_terminals(&mut app, rpc.as_ref(), &store).await;
+                        reconcile_and_sync_live_terminals(
+                            &mut app,
+                            rpc.as_ref(),
+                            framed.as_ref(),
+                            &store,
+                        )
+                        .await;
+                        attach_active_panel_terminals(&mut app, framed.as_ref()).await;
                         app.refresh_sidebar();
                     }
                     Some(Ok(Some(EventMessage::Heartbeat(_)))) => {}
@@ -392,18 +414,74 @@ async fn prune_and_sync_empty_spaces(
     }
 }
 
-async fn reconcile_and_sync_live_terminals(
+async fn attach_terminal_in_pane(
+    pane_id: crate::layout::tree::PaneId,
+    terminal: String,
+    app: &mut TuiApp,
+    framed: Option<&FramedClient>,
+) {
+    let now = Instant::now();
+    app.sidebar_focused = false;
+    let (cols, rows) = app.pane_inner_size(pane_id);
+    let already_live = app.sessions.get(&terminal).is_some_and(|sess| {
+        (sess.state == SessionState::Active || sess.state == SessionState::Observing)
+            && sess.channel.is_some()
+    });
+    if already_live {
+        if let Some(sess) = app.sessions.get_mut(&terminal) {
+            sess.drain_frames();
+            if sess.screen.size() != (cols, rows) {
+                let _ = sess.request_resize(cols, rows, now);
+            }
+        }
+        app.dirty = true;
+    } else if let Some(fc) = framed {
+        let mut sess = AttachSession::new(terminal.clone(), cols, rows);
+        let res = if app.config.attach.mode == AttachMode::Observe {
+            sess.attach_observe(fc).await
+        } else {
+            sess.attach_active(fc).await
+        };
+        match res {
+            Ok(()) => {
+                sess.drain_frames();
+                app.sessions.insert(terminal, sess);
+                app.dirty = true;
+            }
+            Err(e) => {
+                app.set_toast(format!("Attach failed: {e}"), now);
+            }
+        }
+    }
+}
+
+pub async fn attach_active_panel_terminals(app: &mut TuiApp, framed: Option<&FramedClient>) {
+    let mut actions = Vec::new();
+    app.attach_unattached_in_active_panel(&mut actions);
+    for act in actions {
+        if let AppAction::AttachTerminal { pane_id, terminal } = act {
+            attach_terminal_in_pane(pane_id, terminal, app, framed).await;
+        }
+    }
+}
+
+pub async fn reconcile_and_sync_live_terminals(
     app: &mut TuiApp,
     rpc: Option<&RpcClient>,
+    framed: Option<&FramedClient>,
     store: &LayoutStore,
 ) {
     let modified = app.reconcile_live_terminals();
+    let active_modified = modified.iter().any(|sp| sp == &app.active_space);
     for sp in modified {
         if let Some(space_layout) = app.layouts.spaces.get(&sp) {
             if space_layout.has_terminals() {
                 let _ = store.save_space(rpc, &sp, space_layout).await;
             }
         }
+    }
+    if active_modified {
+        attach_active_panel_terminals(app, framed).await;
     }
 }
 
@@ -413,6 +491,17 @@ pub async fn handle_core_event(
     rpc: Option<&RpcClient>,
     store: &LayoutStore,
 ) {
+    handle_core_event_with_framed(ev, app, rpc, None, store).await;
+}
+
+pub async fn handle_core_event_with_framed(
+    ev: EventPayload,
+    app: &mut TuiApp,
+    rpc: Option<&RpcClient>,
+    framed: Option<&FramedClient>,
+    store: &LayoutStore,
+) {
+    let prev_space = app.active_space.clone();
     let is_exit = ev.event_type == "finished" || ev.event_type == "removed";
     let ev_type = ev.event_type.clone();
     let ev_term = ev.terminal.clone();
@@ -438,7 +527,10 @@ pub async fn handle_core_event(
         }
     }
     prune_and_sync_empty_spaces(app, rpc, store).await;
-    reconcile_and_sync_live_terminals(app, rpc, store).await;
+    reconcile_and_sync_live_terminals(app, rpc, framed, store).await;
+    if app.active_space != prev_space {
+        attach_active_panel_terminals(app, framed).await;
+    }
     app.refresh_sidebar();
 }
 
@@ -457,38 +549,7 @@ pub async fn dispatch_action(
             app.should_quit = true;
         }
         AppAction::AttachTerminal { pane_id, terminal } => {
-            app.sidebar_focused = false;
-            let (cols, rows) = app.pane_inner_size(pane_id);
-            let already_live = app.sessions.get(&terminal).is_some_and(|sess| {
-                (sess.state == SessionState::Active || sess.state == SessionState::Observing)
-                    && sess.channel.is_some()
-            });
-            if already_live {
-                if let Some(sess) = app.sessions.get_mut(&terminal) {
-                    sess.drain_frames();
-                    if sess.screen.size() != (cols, rows) {
-                        let _ = sess.request_resize(cols, rows, now);
-                    }
-                }
-                app.dirty = true;
-            } else if let Some(fc) = framed {
-                let mut sess = AttachSession::new(terminal.clone(), cols, rows);
-                let res = if app.config.attach.mode == AttachMode::Observe {
-                    sess.attach_observe(fc).await
-                } else {
-                    sess.attach_active(fc).await
-                };
-                match res {
-                    Ok(()) => {
-                        sess.drain_frames();
-                        app.sessions.insert(terminal, sess);
-                        app.dirty = true;
-                    }
-                    Err(e) => {
-                        app.set_toast(format!("Attach failed: {e}"), now);
-                    }
-                }
-            }
+            attach_terminal_in_pane(pane_id, terminal, app, framed).await;
         }
         AppAction::TakeOver(terminal) => {
             if let Some(fc) = framed {
@@ -532,19 +593,16 @@ pub async fn dispatch_action(
                         let addr = term.address.clone();
                         app.model.terminals.insert(addr.clone(), term);
                         let orig_space = app.active_space.clone();
-                        let switched_space = if let Some(sp) = &target_space {
+                        let resolved_space = target_space.as_deref().unwrap_or(UNASSIGNED_SPACE);
+                        if let Some(sp) = &target_space {
                             app.model.declared_spaces.insert(sp.clone());
-                            if *sp != orig_space {
-                                if let Some(removed) = app.switch_space(sp.clone()) {
-                                    let _ = store.remove_space(Some(client), &removed).await;
-                                }
-                                true
-                            } else {
-                                false
+                        }
+                        let switched_space = resolved_space != orig_space;
+                        if switched_space {
+                            if let Some(removed) = app.switch_space(resolved_space.to_string()) {
+                                let _ = store.remove_space(Some(client), &removed).await;
                             }
-                        } else {
-                            false
-                        };
+                        }
                         let effective_target = if switched_space {
                             SpawnTarget::NewPanel
                         } else {
@@ -585,6 +643,7 @@ pub async fn dispatch_action(
                 if let Err(e) = client.terminal_kill(&addr).await {
                     app.set_toast(format!("Kill failed: {e}"), now);
                 } else {
+                    let prev_space = app.active_space.clone();
                     app.sessions.remove(&addr);
                     if let Some(t) = app.model.terminals.get_mut(&addr) {
                         t.state = "finished".to_string();
@@ -594,6 +653,9 @@ pub async fn dispatch_action(
                     for sp in &emptied {
                         app.remove_empty_space(sp);
                         let _ = store.remove_space(Some(client), sp).await;
+                    }
+                    if app.active_space != prev_space {
+                        attach_active_panel_terminals(app, framed).await;
                     }
                     app.refresh_sidebar();
                     app.dirty = true;
@@ -605,12 +667,16 @@ pub async fn dispatch_action(
                 if let Err(e) = client.terminal_rm(&addr).await {
                     app.set_toast(format!("Remove failed: {e}"), now);
                 } else {
+                    let prev_space = app.active_space.clone();
                     app.sessions.remove(&addr);
                     let emptied = app.prune_terminal_from_spaces(&addr);
                     app.model.terminals.remove(&addr);
                     for sp in &emptied {
                         app.remove_empty_space(sp);
                         let _ = store.remove_space(Some(client), sp).await;
+                    }
+                    if app.active_space != prev_space {
+                        attach_active_panel_terminals(app, framed).await;
                     }
                     app.refresh_sidebar();
                     app.dirty = true;

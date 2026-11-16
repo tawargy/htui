@@ -28,6 +28,11 @@ impl PanelLayout {
     }
 
     pub fn from_tree(id: PanelId, tree: SplitTree) -> Self {
+        let tree = if tree.root.is_none() {
+            SplitTree::with_single(None).0
+        } else {
+            tree
+        };
         let focused_pane = tree.pane_ids().into_iter().next();
         Self {
             id,
@@ -174,6 +179,35 @@ impl SpaceLayout {
         let (panel, pane_id) = PanelLayout::new(panel_id, terminal);
         self.panels.push(panel);
         self.active_panel = Some(panel_id);
+        (panel_id, pane_id)
+    }
+
+    pub fn place_in_new_or_empty_panel(
+        &mut self,
+        addr: String,
+        preserve_occupied_active: bool,
+    ) -> (PanelId, PaneId) {
+        let term_ref = TermRef { address: addr };
+        if self.is_single_empty_placeholder() {
+            let panel = self.active_panel_mut_or_default();
+            if let Some(pid) = panel
+                .focused_pane
+                .or_else(|| panel.tree.pane_ids().into_iter().next())
+            {
+                panel.tree.set_terminal(pid, Some(term_ref));
+                panel.focused_pane = Some(pid);
+                return (panel.id, pid);
+            }
+        }
+        let prev_active = self.active_panel().map(|p| p.id);
+        let active_was_occupied =
+            preserve_occupied_active && self.active_panel().is_some_and(PanelLayout::has_terminals);
+        let (panel_id, pane_id) = self.add_panel(Some(term_ref));
+        if active_was_occupied {
+            if let Some(prev_id) = prev_active {
+                self.set_active_panel(prev_id);
+            }
+        }
         (panel_id, pane_id)
     }
 
@@ -535,5 +569,33 @@ mod tests {
         assert!(panel.tree.close(p2));
         panel.ensure_valid_focus();
         assert_eq!(panel.focused_pane, Some(p1));
+    }
+
+    #[test]
+    fn from_tree_normalizes_empty_legacy_tree() {
+        let panel = PanelLayout::from_tree(1, SplitTree::new());
+        assert!(panel.tree.root.is_some());
+        assert_eq!(panel.tree.pane_ids(), vec![1]);
+        assert_eq!(panel.focused_pane, Some(1));
+    }
+
+    #[test]
+    fn place_in_new_or_empty_panel_respects_placeholder_and_preserve_flag() {
+        let mut space = SpaceLayout::new();
+        let (p1, _) = space.place_in_new_or_empty_panel("t1".into(), true);
+        assert_eq!(space.panels.len(), 1);
+        assert_eq!(space.active_panel, Some(p1));
+        assert_eq!(space.panels[0].terminal_addresses(), vec!["t1"]);
+
+        // With preserve_occupied_active = true, active_panel stays p1
+        let (p2, _) = space.place_in_new_or_empty_panel("t2".into(), true);
+        assert_eq!(space.panels.len(), 2);
+        assert_eq!(space.active_panel, Some(p1));
+
+        // With preserve_occupied_active = false, active_panel switches to new panel p3
+        let (p3, _) = space.place_in_new_or_empty_panel("t3".into(), false);
+        assert_eq!(space.panels.len(), 3);
+        assert_eq!(space.active_panel, Some(p3));
+        assert_ne!(p2, p3);
     }
 }

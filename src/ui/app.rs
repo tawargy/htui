@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::config::Config;
 use crate::hc::types::Terminal;
-use crate::layout::panel::{PanelId, PanelLayout, SpaceLayout};
+use crate::layout::panel::{PanelId, SpaceLayout};
 use crate::layout::store::LayoutDoc;
 use crate::layout::tree::{PaneId, SplitAxis, SplitTree, TermRef};
 use crate::model::reducer::AppModelState;
@@ -210,6 +210,7 @@ impl TuiApp {
         if changed {
             self.selection = None;
         }
+        self.drag = MouseDragState::default();
         self.sidebar_focused = false;
         self.attach_unattached_in_active_panel(&mut actions);
         self.dirty = true;
@@ -283,35 +284,8 @@ impl TuiApp {
             return;
         }
         let space_layout = self.layouts.spaces.entry(space_name.clone()).or_default();
-        let pane_id = if space_layout.is_single_empty_placeholder() {
-            let panel = space_layout.active_panel_mut_or_default();
-            if let Some(pid) = panel
-                .focused_pane
-                .or_else(|| panel.tree.pane_ids().into_iter().next())
-            {
-                panel.tree.set_terminal(
-                    pid,
-                    Some(TermRef {
-                        address: address.clone(),
-                    }),
-                );
-                panel.focused_pane = Some(pid);
-                self.focused_pane = Some(pid);
-                pid
-            } else {
-                let (_panel_id, pid) = space_layout.add_panel(Some(TermRef {
-                    address: address.clone(),
-                }));
-                self.focused_pane = Some(pid);
-                pid
-            }
-        } else {
-            let (_panel_id, pid) = space_layout.add_panel(Some(TermRef {
-                address: address.clone(),
-            }));
-            self.focused_pane = Some(pid);
-            pid
-        };
+        let (_, pane_id) = space_layout.place_in_new_or_empty_panel(address.clone(), false);
+        self.focused_pane = Some(pane_id);
         self.selection = None;
         self.sidebar_focused = false;
         actions.push(AppAction::AttachTerminal {
@@ -423,7 +397,8 @@ impl TuiApp {
                 } else {
                     self.sidebar_focused = false;
                     self.model.declared_spaces.insert(trimmed.clone());
-                    if let Some(removed) = self.switch_space(trimmed.clone()) {
+                    if let Some(removed) = self.switch_space_with_actions(trimmed.clone(), actions)
+                    {
                         actions.push(AppAction::RemoveLayout(removed));
                     }
                     self.refresh_sidebar();
@@ -581,7 +556,9 @@ impl TuiApp {
                             if let Some(item) = self.sidebar.selected_item().cloned() {
                                 match item {
                                     SidebarItem::Space { name, .. } => {
-                                        if let Some(removed) = self.switch_space(name.clone()) {
+                                        if let Some(removed) = self
+                                            .switch_space_with_actions(name.clone(), &mut actions)
+                                        {
                                             actions.push(AppAction::RemoveLayout(removed));
                                         }
                                         self.refresh_sidebar();
@@ -734,7 +711,9 @@ impl TuiApp {
                             self.open_sidebar_terminal(address, space, &mut actions);
                         }
                         Some(SidebarItem::Space { name, .. }) => {
-                            if let Some(removed) = self.switch_space(name.clone()) {
+                            if let Some(removed) =
+                                self.switch_space_with_actions(name.clone(), &mut actions)
+                            {
                                 actions.push(AppAction::RemoveLayout(removed));
                             }
                             self.refresh_sidebar();
@@ -934,6 +913,8 @@ impl TuiApp {
                 removed_prev = Some(prev);
             }
         }
+        self.selection = None;
+        self.drag = MouseDragState::default();
         self.active_space = space.clone();
         let entry = self.layouts.spaces.entry(space).or_default();
         entry.ensure_valid_active_panel();
@@ -943,6 +924,16 @@ impl TuiApp {
         });
         self.dirty = true;
         removed_prev
+    }
+
+    pub fn switch_space_with_actions(
+        &mut self,
+        space: String,
+        actions: &mut Vec<AppAction>,
+    ) -> Option<String> {
+        let removed = self.switch_space(space);
+        self.attach_unattached_in_active_panel(actions);
+        removed
     }
 
     fn apply_command(&mut self, cmd: Command, now: Instant, actions: &mut Vec<AppAction>) {
@@ -962,123 +953,7 @@ impl TuiApp {
             }
             Command::ClosePane => {
                 if let Some(pid) = self.focused_pane {
-                    let cur_space = self.active_space.clone();
-                    let closed_addr = self
-                        .current_tree()
-                        .find_terminal(pid)
-                        .map(|t| t.address.clone());
-                    let had_multi_panes = self.current_tree().pane_ids().len() > 1;
-                    let panel_count_before = self
-                        .layouts
-                        .spaces
-                        .get(&cur_space)
-                        .map_or(1, |s| s.panels.len());
-                    let active_panel_id = self.active_panel_id();
-
-                    if let Some(addr) = closed_addr.as_deref() {
-                        self.current_tree_mut().set_terminal(pid, None);
-                        self.kill_or_remove_terminal(addr, actions);
-                    }
-
-                    if had_multi_panes {
-                        self.current_tree_mut().close(pid);
-                        let next_pid = self.current_tree().pane_ids().into_iter().next();
-                        self.set_focused_pane(next_pid);
-
-                        if panel_count_before > 1 {
-                            if let Some(panel_id) = active_panel_id {
-                                let panel_empty = self
-                                    .layouts
-                                    .spaces
-                                    .get(&cur_space)
-                                    .and_then(|s| s.panel(panel_id))
-                                    .is_some_and(|p| !p.has_terminals());
-                                if panel_empty {
-                                    if let Some(space_layout) =
-                                        self.layouts.spaces.get_mut(&cur_space)
-                                    {
-                                        space_layout.remove_panel(panel_id);
-                                    }
-                                    self.sync_focused_pane_from_active_panel();
-                                    self.selection = None;
-                                    self.attach_unattached_in_active_panel(actions);
-                                }
-                            }
-                        }
-
-                        if cur_space != UNASSIGNED_SPACE {
-                            if !self.space_has_open_terminals(&cur_space) {
-                                self.remove_empty_space(&cur_space);
-                                actions.push(AppAction::RemoveLayout(cur_space));
-                            } else {
-                                actions.push(AppAction::SaveLayout(cur_space));
-                            }
-                        } else if !self
-                            .layouts
-                            .spaces
-                            .get(UNASSIGNED_SPACE)
-                            .is_some_and(SpaceLayout::has_terminals)
-                        {
-                            if let Some(space_layout) =
-                                self.layouts.spaces.get_mut(UNASSIGNED_SPACE)
-                            {
-                                space_layout.collapse_empty_splits_or_prune();
-                            }
-                            self.sync_focused_pane_from_active_panel();
-                            actions.push(AppAction::RemoveLayout(cur_space));
-                        } else {
-                            actions.push(AppAction::SaveLayout(cur_space));
-                        }
-                    } else if panel_count_before > 1 {
-                        if let Some(panel_id) = active_panel_id {
-                            if let Some(space_layout) = self.layouts.spaces.get_mut(&cur_space) {
-                                space_layout.remove_panel(panel_id);
-                            }
-                        }
-                        self.sync_focused_pane_from_active_panel();
-                        self.selection = None;
-                        self.attach_unattached_in_active_panel(actions);
-
-                        if cur_space != UNASSIGNED_SPACE {
-                            if !self.space_has_open_terminals(&cur_space) {
-                                self.remove_empty_space(&cur_space);
-                                actions.push(AppAction::RemoveLayout(cur_space));
-                            } else {
-                                actions.push(AppAction::SaveLayout(cur_space));
-                            }
-                        } else if !self
-                            .layouts
-                            .spaces
-                            .get(UNASSIGNED_SPACE)
-                            .is_some_and(SpaceLayout::has_terminals)
-                        {
-                            if let Some(next_space) = self.next_named_space() {
-                                self.layouts.spaces.remove(UNASSIGNED_SPACE);
-                                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
-                                self.switch_space(next_space);
-                            } else {
-                                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
-                            }
-                        } else {
-                            actions.push(AppAction::SaveLayout(cur_space));
-                        }
-                    } else if cur_space != UNASSIGNED_SPACE {
-                        self.close_space_terminals(&cur_space, actions);
-                        self.remove_empty_space(&cur_space);
-                        actions.push(AppAction::RemoveLayout(cur_space));
-                    } else {
-                        let extra_removed = self.close_space_terminals(UNASSIGNED_SPACE, actions);
-                        if let Some(next_space) = self.next_named_space() {
-                            self.layouts.spaces.remove(UNASSIGNED_SPACE);
-                            actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
-                            self.switch_space(next_space);
-                        } else if closed_addr.is_some() || extra_removed > 0 {
-                            actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
-                        } else {
-                            self.set_toast("Workspace is already empty", now);
-                        }
-                    }
-                    self.refresh_sidebar();
+                    self.close_focused_pane(pid, now, actions);
                 }
             }
             Command::FocusDir(dir) => {
@@ -1230,6 +1105,19 @@ impl TuiApp {
     }
 
     pub fn pane_inner_size(&self, pane_id: PaneId) -> (u16, u16) {
+        if self.last_panes_area.width > 0 && self.last_panes_area.height > 0 {
+            if let Some((_, rect)) = self
+                .current_tree()
+                .compute_rects(self.last_panes_area)
+                .into_iter()
+                .find(|(pid, _)| *pid == pane_id)
+            {
+                return (
+                    rect.width.saturating_sub(2).max(1),
+                    rect.height.saturating_sub(2).max(1),
+                );
+            }
+        }
         if let Some(p) = self.last_geom.panes.iter().find(|p| p.pane_id == pane_id) {
             return (
                 p.rect.width.saturating_sub(2).max(1),
@@ -1296,6 +1184,117 @@ impl TuiApp {
             .any(|t| t.is_live() && t.labels.get("space").map(String::as_str) == Some(space))
     }
 
+    fn close_focused_pane(&mut self, pid: PaneId, now: Instant, actions: &mut Vec<AppAction>) {
+        let cur_space = self.active_space.clone();
+        let closed_addr = self
+            .current_tree()
+            .find_terminal(pid)
+            .map(|t| t.address.clone());
+        let had_multi_panes = self.current_tree().pane_ids().len() > 1;
+        let panel_count_before = self
+            .layouts
+            .spaces
+            .get(&cur_space)
+            .map_or(1, |s| s.panels.len());
+        let active_panel_id = self.active_panel_id();
+
+        if let Some(addr) = closed_addr.as_deref() {
+            self.current_tree_mut().set_terminal(pid, None);
+            self.kill_or_remove_terminal(addr, actions);
+        }
+
+        if had_multi_panes {
+            self.current_tree_mut().close(pid);
+            let next_pid = self.current_tree().pane_ids().into_iter().next();
+            self.set_focused_pane(next_pid);
+
+            if panel_count_before > 1 {
+                if let Some(panel_id) = active_panel_id {
+                    let panel_empty = self
+                        .layouts
+                        .spaces
+                        .get(&cur_space)
+                        .and_then(|s| s.panel(panel_id))
+                        .is_some_and(|p| !p.has_terminals());
+                    if panel_empty {
+                        self.remove_panel_and_attach_active(&cur_space, panel_id, actions);
+                    }
+                }
+            }
+            self.finalize_space_after_pane_close(&cur_space, actions);
+        } else if panel_count_before > 1 {
+            if let Some(panel_id) = active_panel_id {
+                self.remove_panel_and_attach_active(&cur_space, panel_id, actions);
+            }
+            self.finalize_space_after_pane_close(&cur_space, actions);
+        } else if cur_space != UNASSIGNED_SPACE {
+            self.close_space_terminals(&cur_space, actions);
+            actions.push(AppAction::RemoveLayout(cur_space.clone()));
+            self.remove_empty_space_with_actions(&cur_space, actions);
+        } else {
+            let extra_removed = self.close_space_terminals(UNASSIGNED_SPACE, actions);
+            if let Some(next_space) = self.next_named_space() {
+                self.layouts.spaces.remove(UNASSIGNED_SPACE);
+                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+                self.switch_space_with_actions(next_space, actions);
+            } else if closed_addr.is_some() || extra_removed > 0 {
+                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+            } else {
+                self.set_toast("Workspace is already empty", now);
+            }
+        }
+        self.refresh_sidebar();
+    }
+
+    fn remove_panel_and_attach_active(
+        &mut self,
+        space: &str,
+        panel_id: PanelId,
+        actions: &mut Vec<AppAction>,
+    ) {
+        if let Some(space_layout) = self.layouts.spaces.get_mut(space) {
+            space_layout.remove_panel(panel_id);
+        }
+        self.sync_focused_pane_from_active_panel();
+        self.selection = None;
+        self.drag = MouseDragState::default();
+        self.attach_unattached_in_active_panel(actions);
+    }
+
+    fn finalize_space_after_pane_close(&mut self, cur_space: &str, actions: &mut Vec<AppAction>) {
+        if cur_space != UNASSIGNED_SPACE {
+            if !self.space_has_open_terminals(cur_space) {
+                actions.push(AppAction::RemoveLayout(cur_space.to_string()));
+                self.remove_empty_space_with_actions(cur_space, actions);
+            } else {
+                actions.push(AppAction::SaveLayout(cur_space.to_string()));
+            }
+        } else if !self
+            .layouts
+            .spaces
+            .get(UNASSIGNED_SPACE)
+            .is_some_and(SpaceLayout::has_terminals)
+        {
+            self.finalize_empty_unassigned_space(actions);
+        } else {
+            actions.push(AppAction::SaveLayout(cur_space.to_string()));
+        }
+    }
+
+    fn finalize_empty_unassigned_space(&mut self, actions: &mut Vec<AppAction>) {
+        if let Some(next_space) = self.next_named_space() {
+            self.layouts.spaces.remove(UNASSIGNED_SPACE);
+            actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+            self.switch_space_with_actions(next_space, actions);
+        } else {
+            if let Some(space_layout) = self.layouts.spaces.get_mut(UNASSIGNED_SPACE) {
+                space_layout.collapse_empty_splits_or_prune();
+            }
+            self.sync_focused_pane_from_active_panel();
+            actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+        }
+    }
+
     fn next_named_space(&self) -> Option<String> {
         self.layouts
             .spaces
@@ -1350,6 +1349,20 @@ impl TuiApp {
                 .next_named_space()
                 .unwrap_or_else(|| UNASSIGNED_SPACE.to_string());
             self.switch_space(next_space);
+        }
+    }
+
+    pub fn remove_empty_space_with_actions(&mut self, space: &str, actions: &mut Vec<AppAction>) {
+        if space == UNASSIGNED_SPACE {
+            return;
+        }
+        self.model.declared_spaces.remove(space);
+        self.layouts.spaces.remove(space);
+        if self.active_space == space {
+            let next_space = self
+                .next_named_space()
+                .unwrap_or_else(|| UNASSIGNED_SPACE.to_string());
+            self.switch_space_with_actions(next_space, actions);
         }
     }
 
@@ -1520,19 +1533,8 @@ impl TuiApp {
             SpawnTarget::NewPanel => {}
         }
 
-        if space_layout.is_single_empty_placeholder() {
-            let panel = space_layout.active_panel_mut_or_default();
-            if let Some(pid) = panel
-                .focused_pane
-                .or_else(|| panel.tree.pane_ids().into_iter().next())
-            {
-                panel.tree.set_terminal(pid, Some(term_ref));
-                panel.focused_pane = Some(pid);
-                self.focused_pane = Some(pid);
-                return;
-            }
-        }
-        let (_panel_id, pane_id) = space_layout.add_panel(Some(term_ref));
+        let (_panel_id, pane_id) =
+            space_layout.place_in_new_or_empty_panel(addr.to_string(), false);
         self.focused_pane = Some(pane_id);
     }
 
@@ -1569,29 +1571,7 @@ impl TuiApp {
                 self.model.declared_spaces.insert(space_name.clone());
             }
             let space_layout = self.layouts.spaces.entry(space_name.clone()).or_default();
-            let active_was_occupied = space_layout
-                .active_panel()
-                .is_some_and(PanelLayout::has_terminals);
-            if space_layout.is_single_empty_placeholder() {
-                let panel = space_layout.active_panel_mut_or_default();
-                if let Some(pid) = panel
-                    .focused_pane
-                    .or_else(|| panel.tree.pane_ids().into_iter().next())
-                {
-                    panel
-                        .tree
-                        .set_terminal(pid, Some(TermRef { address: addr }));
-                    panel.focused_pane = Some(pid);
-                }
-            } else {
-                let prev_active = space_layout.active_panel;
-                space_layout.add_panel(Some(TermRef { address: addr }));
-                if active_was_occupied {
-                    if let Some(prev_id) = prev_active {
-                        space_layout.set_active_panel(prev_id);
-                    }
-                }
-            }
+            space_layout.place_in_new_or_empty_panel(addr, true);
             if space_name == self.active_space {
                 self.sync_focused_pane_from_active_panel();
             }
@@ -1758,5 +1738,126 @@ mod tests {
         assert!(!actions.contains(&AppAction::RemoveLayout("api".into())));
         assert_eq!(app.layouts.spaces["api"].panels.len(), 2);
         assert!(app.layouts.spaces.contains_key("api"));
+    }
+
+    #[test]
+    fn switch_panel_and_switch_space_clear_drag_and_selection() {
+        let mut app = TuiApp::new(Config::default(), Some("api".into()));
+        let (p2_id, _) = app
+            .layouts
+            .spaces
+            .get_mut("api")
+            .unwrap()
+            .add_panel(Some(TermRef {
+                address: "t2".into(),
+            }));
+        app.layouts
+            .spaces
+            .get_mut("api")
+            .unwrap()
+            .set_active_panel(1);
+        app.selection = Some(TextSelection {
+            pane_id: 1,
+            start: (0, 0),
+            end: (5, 0),
+        });
+        app.drag.active_selection = Some((1, Rect::new(0, 0, 20, 10), (0, 0)));
+        app.drag.active_passthrough_pane = Some((1, Rect::new(0, 0, 20, 10)));
+
+        app.switch_panel(p2_id);
+        assert!(app.selection.is_none());
+        assert!(app.drag.active_selection.is_none());
+        assert!(app.drag.active_passthrough_pane.is_none());
+
+        app.selection = Some(TextSelection {
+            pane_id: 1,
+            start: (1, 1),
+            end: (3, 1),
+        });
+        app.drag.active_selection = Some((1, Rect::new(0, 0, 20, 10), (1, 1)));
+        app.switch_space("web".into());
+        assert!(app.selection.is_none());
+        assert!(app.drag.active_selection.is_none());
+        assert!(app.drag.active_passthrough_pane.is_none());
+    }
+
+    #[test]
+    fn pane_inner_size_uses_computed_rects_after_split_before_rerender() {
+        let mut app = TuiApp::new(Config::default(), Some("api".into()));
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf, Instant::now());
+
+        let p1 = app.focused_pane.unwrap();
+        let (w_before, _) = app.pane_inner_size(p1);
+        let p2 = app
+            .current_tree_mut()
+            .split(p1, SplitAxis::Horizontal, None)
+            .unwrap();
+        let (w_p1_after, _) = app.pane_inner_size(p1);
+        let (w_p2_after, _) = app.pane_inner_size(p2);
+
+        assert!(
+            w_p1_after < w_before,
+            "expected split p1 width {w_p1_after} < {w_before}"
+        );
+        assert!(
+            w_p2_after < w_before,
+            "expected split p2 width {w_p2_after} < {w_before}"
+        );
+    }
+
+    #[test]
+    fn close_pane_multi_pane_unassigned_empty_switches_to_named_space() {
+        let mut app = TuiApp::new(Config::default(), None);
+        let mut t_api = Terminal {
+            address: "t-api".into(),
+            state: "live".into(),
+            argv: vec!["zsh".into()],
+            ..Default::default()
+        };
+        t_api.labels.insert("space".into(), "api".into());
+        app.model.terminals.insert("t-api".into(), t_api);
+        app.model.declared_spaces.insert("api".into());
+        let (api_space, _, api_pane) = SpaceLayout::with_single(Some(TermRef {
+            address: "t-api".into(),
+        }));
+        app.layouts.spaces.insert("api".into(), api_space);
+
+        // Unassigned has 1 terminal + 1 empty split pane
+        let p1 = app.focused_pane.unwrap();
+        app.current_tree_mut().set_terminal(
+            p1,
+            Some(TermRef {
+                address: "t-u".into(),
+            }),
+        );
+        app.model.terminals.insert(
+            "t-u".into(),
+            Terminal {
+                address: "t-u".into(),
+                state: "live".into(),
+                argv: vec!["sh".into()],
+                ..Default::default()
+            },
+        );
+        app.current_tree_mut()
+            .split(p1, SplitAxis::Horizontal, None)
+            .unwrap();
+        app.focused_pane = Some(p1);
+
+        let now = Instant::now();
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let key_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(ctrl_b, now);
+        let actions = app.handle_key(key_x, now + Duration::from_millis(20));
+
+        assert_eq!(app.active_space, "api");
+        assert!(!app.layouts.spaces.contains_key(UNASSIGNED_SPACE));
+        assert!(actions.contains(&AppAction::RemoveLayout(UNASSIGNED_SPACE.into())));
+        assert!(actions.contains(&AppAction::AttachTerminal {
+            pane_id: api_pane,
+            terminal: "t-api".into(),
+        }));
     }
 }
