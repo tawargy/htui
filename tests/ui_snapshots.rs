@@ -180,6 +180,94 @@ fn panes_arabic_snapshot() {
 }
 
 #[test]
+fn side_by_side_panes_boundary_wide_and_zero_width_preserve_divider_and_diff() {
+    use unicode_width::UnicodeWidthStr;
+
+    let (mut tree, p1) = SplitTree::with_single(Some(TermRef {
+        address: "t1".into(),
+    }));
+    let _p2 = tree.split(
+        p1,
+        SplitAxis::Horizontal,
+        Some(TermRef {
+            address: "t2".into(),
+        }),
+    );
+
+    // Total width 40 -> left pane outer width 20 (inner width 18), right pane outer x=20..40 (inner width 18)
+    // Intentionally start s1 wider (30 cols) with wide chars crossing col 17..19 and zero-width chars,
+    // then also test after shrinking s1 to 18 cols.
+    let mut s1 = AttachSession::new("t1".into(), 30, 8);
+    s1.state = SessionState::Active;
+    // Row 0: 17 ASCII 'a' + wide "漢" at col 17..19 (crosses inner width 18!)
+    // Row 1: zero-width chars + "بِسْمِ"
+    s1.screen
+        .process("aaaaaaaaaaaaaaaaa漢\r\n\u{200B}\u{FEFF}بِسْمِ".as_bytes());
+
+    let mut s2 = AttachSession::new("t2".into(), 18, 8);
+    s2.state = SessionState::Active;
+    s2.screen.process(b"RIGHT_ROW0\r\nRIGHT_ROW1");
+
+    let mut sessions = HashMap::new();
+    sessions.insert("t1".into(), s1);
+    sessions.insert("t2".into(), s2);
+
+    let area = Rect::new(0, 0, 40, 10);
+    let prev_buf = Buffer::empty(area);
+    let mut next_buf = Buffer::empty(area);
+    render_panes(area, &mut next_buf, &tree, Some(p1), &sessions, None);
+
+    // Left pane right border is at x=19 ('│'), right pane left border is at x=20 ('│').
+    // Inner right column of left pane is x=18. It must NOT hold a width-2 glyph.
+    let cell_edge = next_buf.cell((18, 1)).unwrap().symbol();
+    assert!(
+        UnicodeWidthStr::width(cell_edge) <= 1,
+        "edge cell at x=18 must not be wide, got {cell_edge:?}"
+    );
+    assert_eq!(next_buf.cell((19, 1)).unwrap().symbol(), "│");
+    assert_eq!(next_buf.cell((20, 1)).unwrap().symbol(), "│");
+    assert_eq!(next_buf.cell((19, 2)).unwrap().symbol(), "│");
+    assert_eq!(next_buf.cell((20, 2)).unwrap().symbol(), "│");
+
+    // Buffer::diff from prev_buf -> next_buf must include the border cells at x=19, x=20
+    // (i.e. not skipped by an overflowing wide cell at x=18).
+    let updates = prev_buf.diff(&next_buf);
+    assert!(
+        updates
+            .iter()
+            .any(|(x, y, c)| *x == 19 && *y == 1 && c.symbol() == "│"),
+        "Buffer::diff skipped left pane right border at (19,1)!"
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|(x, y, c)| *x == 20 && *y == 1 && c.symbol() == "│"),
+        "Buffer::diff skipped right pane left border at (20,1)!"
+    );
+
+    let rendered = buffer_to_string(&next_buf);
+    assert!(rendered.contains("RIGHT_ROW0"));
+    assert!(rendered.contains("RIGHT_ROW1"));
+    assert!(rendered.contains("بِسْمِ"));
+
+    // Shrink s1 to 18 cols (which may leave an orphaned wide cell at col 17 in vt100) and re-verify
+    sessions.get_mut("t1").unwrap().screen.resize(18, 8);
+    let mut after_shrink = Buffer::empty(area);
+    render_panes(area, &mut after_shrink, &tree, Some(p1), &sessions, None);
+    assert!(
+        UnicodeWidthStr::width(after_shrink.cell((18, 1)).unwrap().symbol()) <= 1,
+        "edge cell after shrink must have width <= 1"
+    );
+    let shrink_updates = prev_buf.diff(&after_shrink);
+    assert!(
+        shrink_updates
+            .iter()
+            .any(|(x, y, c)| *x == 19 && *y == 1 && c.symbol() == "│"),
+        "Buffer::diff skipped border after shrink!"
+    );
+}
+
+#[test]
 fn mouse_hit_testing() {
     let (mut tree, p1) = SplitTree::with_single(Some(TermRef {
         address: "t1".into(),

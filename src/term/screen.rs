@@ -2,6 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MouseProtocolMode {
@@ -109,7 +110,14 @@ impl ScreenModel for Vt100Screen {
         let symbol = if raw.is_empty() {
             " ".to_string()
         } else {
-            preserve_first_grapheme(&raw)
+            let candidate = preserve_first_grapheme(&raw);
+            if candidate.chars().any(char::is_control)
+                || UnicodeWidthStr::width(candidate.as_str()) == 0
+            {
+                " ".to_string()
+            } else {
+                candidate
+            }
         };
 
         let mut modifiers = Modifier::empty();
@@ -156,21 +164,50 @@ impl ScreenModel for Vt100Screen {
         let max_rows = area.height.min(screen_rows);
         let max_cols = area.width.min(screen_cols);
 
-        for r in 0..max_rows {
-            for c in 0..max_cols {
-                if let Some(sc) = self.cell(r, c) {
-                    if sc.wide_continuation {
-                        continue;
-                    }
-                    let bx = area.x + c;
-                    let by = area.y + r;
-                    if let Some(buf_cell) = buf.cell_mut((bx, by)) {
-                        let style = Style::default()
-                            .fg(sc.fg)
-                            .bg(sc.bg)
-                            .add_modifier(sc.modifiers);
-                        buf_cell.set_symbol(&sc.symbol);
-                        buf_cell.set_style(style);
+        for r in 0..area.height {
+            let mut skip_cols: u16 = 0;
+            for c in 0..area.width {
+                let bx = area.x + c;
+                let by = area.y + r;
+                let Some(buf_cell) = buf.cell_mut((bx, by)) else {
+                    continue;
+                };
+                buf_cell.reset();
+
+                if r >= max_rows || c >= max_cols {
+                    continue;
+                }
+                if skip_cols > 0 {
+                    skip_cols -= 1;
+                    continue;
+                }
+
+                let Some(sc) = self.cell(r, c) else {
+                    continue;
+                };
+                let style = Style::default()
+                    .fg(sc.fg)
+                    .bg(sc.bg)
+                    .add_modifier(sc.modifiers);
+
+                if sc.wide_continuation {
+                    buf_cell.set_symbol(" ");
+                    buf_cell.set_style(style);
+                    continue;
+                }
+
+                let sym_width = UnicodeWidthStr::width(sc.symbol.as_str());
+                if sym_width == 0
+                    || sym_width > 2
+                    || (sym_width > 1 && c as usize + sym_width > area.width as usize)
+                {
+                    buf_cell.set_symbol(" ");
+                    buf_cell.set_style(style);
+                } else {
+                    buf_cell.set_symbol(&sc.symbol);
+                    buf_cell.set_style(style);
+                    if sym_width > 1 {
+                        skip_cols = (sym_width - 1) as u16;
                     }
                 }
             }

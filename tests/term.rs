@@ -45,6 +45,87 @@ fn vt100_screen_arabic() {
     assert_eq!(screen.row_text(0), "Resized OK");
 }
 
+#[test]
+fn vt100_screen_boundary_wide_zero_width_and_clearing_invariants() {
+    use unicode_width::UnicodeWidthStr;
+
+    // 1. Wide character at rightmost column when area is narrower than screen,
+    //    and orphaned wide character after vt100 shrink resize.
+    let mut screen = Vt100Screen::new(10, 4, 100);
+    // "abcd" (cols 0..4) + "漢" (cols 4..6) + "ef" (cols 6..8) + "字" (cols 8..10)
+    screen.process("abcd漢ef字".as_bytes());
+
+    // Render into a 5-col area: col 4 has "漢" (width 2, 4+2=6 > 5) -> must be replaced with " "
+    let narrow_area = Rect::new(0, 0, 5, 2);
+    let mut buf = Buffer::empty(narrow_area);
+    screen.render_to_buffer(narrow_area, &mut buf);
+    let col4 = buf.cell((4, 0)).unwrap().symbol();
+    assert_eq!(col4, " ", "boundary wide char must be clamped to space");
+    assert!(UnicodeWidthStr::width(col4) <= 1);
+
+    // Shrink screen to 5 cols; vt100 Row::resize may leave wide char at col 4
+    screen.resize(5, 4);
+    let mut buf_shrunk = Buffer::empty(narrow_area);
+    screen.render_to_buffer(narrow_area, &mut buf_shrunk);
+    let shrunk_col4 = buf_shrunk.cell((4, 0)).unwrap().symbol();
+    assert_eq!(
+        shrunk_col4, " ",
+        "shrunk boundary wide char must not bleed past area.width"
+    );
+
+    // 2. Continuation cell in buffer must be reset/empty, even if buffer had stale text
+    let mut wide_screen = Vt100Screen::new(6, 2, 100);
+    wide_screen.process("漢a".as_bytes());
+    let wide_area = Rect::new(0, 0, 6, 2);
+    let mut stale_buf = Buffer::empty(wide_area);
+    for x in 0..6 {
+        stale_buf.cell_mut((x, 0)).unwrap().set_symbol("X");
+    }
+    wide_screen.render_to_buffer(wide_area, &mut stale_buf);
+    assert_eq!(stale_buf.cell((0, 0)).unwrap().symbol(), "漢");
+    assert_eq!(
+        stale_buf.cell((1, 0)).unwrap().symbol(),
+        " ",
+        "continuation cell must be reset instead of keeping stale 'X'"
+    );
+    assert_eq!(stale_buf.cell((2, 0)).unwrap().symbol(), "a");
+
+    // 3. Area larger than screen_cols/screen_rows must reset stale cells outside screen bounds
+    let big_area = Rect::new(0, 0, 10, 4);
+    let mut big_buf = Buffer::empty(big_area);
+    for y in 0..4 {
+        for x in 0..10 {
+            big_buf.cell_mut((x, y)).unwrap().set_symbol("Z");
+        }
+    }
+    wide_screen.render_to_buffer(big_area, &mut big_buf);
+    assert_eq!(big_buf.cell((7, 0)).unwrap().symbol(), " ");
+    assert_eq!(big_buf.cell((0, 3)).unwrap().symbol(), " ");
+
+    // 4. Zero-width graphemes (ZWSP, FEFF, lone combining mark) normalize to " ",
+    //    while Arabic harakat clusters remain intact.
+    let mut zw_screen = Vt100Screen::new(20, 3, 100);
+    // Standalone ZWSP / BOM / Arabic harakat
+    zw_screen.process("\u{200B}\u{FEFF}\r\nبِ لَّ شُ".as_bytes());
+    let mut zw_buf = Buffer::empty(Rect::new(0, 0, 20, 3));
+    zw_screen.render_to_buffer(Rect::new(0, 0, 20, 3), &mut zw_buf);
+    for x in 0..20 {
+        let sym = zw_buf.cell((x, 0)).unwrap().symbol();
+        assert!(
+            UnicodeWidthStr::width(sym) >= 1,
+            "zero-width symbol {sym:?} leaked into buffer at col {x}"
+        );
+        assert!(
+            !sym.chars().any(char::is_control),
+            "control char {sym:?} leaked into buffer at col {x}"
+        );
+    }
+    let row1 = zw_screen.row_text(1);
+    assert!(row1.contains("بِ"));
+    assert!(row1.contains("لَّ"));
+    assert!(row1.contains("شُ"));
+}
+
 #[tokio::test]
 async fn session_state_machine() {
     let srv = FakeHcServer::start().await.expect("start fake server");
