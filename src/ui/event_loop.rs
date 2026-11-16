@@ -11,7 +11,6 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
-use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::time::MissedTickBehavior;
 
@@ -27,6 +26,7 @@ use crate::model::reducer::{apply, ModelInput};
 use crate::model::tree::UNASSIGNED_SPACE;
 use crate::term::session::{AttachSession, SessionState};
 use crate::ui::app::{AppAction, TuiApp};
+use crate::ui::backend::SyncCrosstermBackend;
 use crate::ui::dialogs::SpawnTarget;
 
 pub fn restore_terminal() {
@@ -51,7 +51,7 @@ pub async fn run_tui(
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
 
-    let backend = CrosstermBackend::new(io::stdout());
+    let backend = SyncCrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
@@ -61,7 +61,7 @@ pub async fn run_tui(
 }
 
 async fn run_tui_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    terminal: &mut Terminal<SyncCrosstermBackend<io::Stdout>>,
     socket_path: &Path,
     config: Config,
     initial_space: Option<String>,

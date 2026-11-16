@@ -32,14 +32,14 @@
 Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 
 **Acceptance criteria:**
-- [ ] `SyncCrosstermBackend<W: io::Write>` implements `ratatui::backend::Backend` and delegates all lifecycle/cursor/clear/size/flush methods to `CrosstermBackend<W>`.
-- [ ] `SyncCrosstermBackend::draw` wraps every frame in `\x1b[?2026h` ... `\x1b[?2026l`, emits explicit `MoveTo(x, y)` after every non-ASCII cell (`!cell.symbol().is_ascii()`), and elides `MoveTo` for consecutive ASCII runs.
-- [ ] `run_tui` and `run_tui_loop` in `src/ui/event_loop.rs` use `SyncCrosstermBackend`.
-- [ ] Unit tests in `src/ui/backend.rs` verify `MoveTo` after non-ASCII, `MoveTo` elision on ASCII, synchronized update sequences, and modifier/color diffing.
+- [x] `SyncCrosstermBackend<W: io::Write>` implements `ratatui::backend::Backend` and delegates all lifecycle/cursor/clear/size/flush methods to `CrosstermBackend<W>`.
+- [x] `SyncCrosstermBackend::draw` wraps every frame in `\x1b[?2026h` ... `\x1b[?2026l`, emits explicit `MoveTo(x, y)` after every non-ASCII cell (`!cell.symbol().is_ascii()`), and elides `MoveTo` for consecutive ASCII runs.
+- [x] `run_tui` and `run_tui_loop` in `src/ui/event_loop.rs` use `SyncCrosstermBackend`.
+- [x] Unit tests in `src/ui/backend.rs` verify `MoveTo` after non-ASCII, `MoveTo` elision on ASCII, synchronized update sequences, and modifier/color diffing.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib ui::backend`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib ui::backend`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
@@ -53,9 +53,9 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 ---
 
 ## Checkpoint: After Tasks 1-2
-- [ ] `cargo check --all-targets` succeeds without warnings
-- [ ] `cargo test --lib` and `cargo test --test term` pass
-- [ ] `Vt100Screen::cell` sanitization and `SyncCrosstermBackend` behavior verified independently
+- [x] `cargo check --all-targets` succeeds without warnings
+- [x] `cargo test --lib` and `cargo test --test term` pass
+- [x] `Vt100Screen::cell` sanitization and `SyncCrosstermBackend` behavior verified independently
 
 ---
 

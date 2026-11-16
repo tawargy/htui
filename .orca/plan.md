@@ -53,10 +53,10 @@ Task 1: Harden Vt100Screen::cell against Cf/soft-hyphen/VS15/VS16/ZWJ clusters
 - [x] **Task 1:** Harden `Vt100Screen::cell` against Unicode `Cf` format chars, `U+00AD`, variation selectors (`VS15`/`VS16`), and ZWJ clusters while preserving Arabic harakat.
 
 ### Phase 2: Synchronized & Cursor-Safe Terminal Backend
-- [ ] **Task 2:** Implement `SyncCrosstermBackend<W>` in `src/ui/backend.rs`, export in `src/ui/mod.rs`, and wire into `run_tui` / `run_tui_loop` in `src/ui/event_loop.rs`.
+- [x] **Task 2:** Implement `SyncCrosstermBackend<W>` in `src/ui/backend.rs`, export in `src/ui/mod.rs`, and wire into `run_tui` / `run_tui_loop` in `src/ui/event_loop.rs`.
 
 ### Checkpoint 1: Core Implementation
-- [ ] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
+- [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
 
 ### Phase 3: End-to-End ANSI & Divider-Drag Regression Verification
 - [ ] **Task 3:** Add raw ANSI byte-stream (`Vec<u8>`) and side-by-side divider-drag tests in `tests/term.rs` and `tests/ui_snapshots.rs`.

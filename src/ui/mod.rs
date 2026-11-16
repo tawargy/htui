@@ -1,4 +1,5 @@
 pub mod app;
+pub mod backend;
 pub mod clipboard;
 pub mod dialogs;
 pub mod event_loop;
