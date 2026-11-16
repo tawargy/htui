@@ -4678,3 +4678,268 @@ async fn side_by_side_resize_drag_split_outer_resize_and_takeover_preserve_borde
     assert_eq!(promoted.state, SessionState::Active);
     assert_eq!(promoted.screen.size(), app.pane_inner_size(p2));
 }
+
+#[derive(Clone, Default)]
+struct SharedVecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedVecWriter {
+    fn take_string(&self) -> String {
+        let mut guard = self.0.lock().unwrap();
+        let bytes = std::mem::take(&mut *guard);
+        String::from_utf8(bytes).expect("valid utf8 ansi stream")
+    }
+}
+
+impl std::io::Write for SharedVecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Checks that `ansi` is bracketed by Synchronized Output (`?2026h` .. `?2026l`).
+fn assert_sync_framed(ansi: &str, context: &str) {
+    assert!(
+        ansi.starts_with("\x1b[?2026h"),
+        "{context}: missing BeginSynchronizedUpdate prefix in {ansi:?}"
+    );
+    let body = ansi.strip_suffix("\x1b[?25l").unwrap_or(ansi);
+    assert!(
+        body.ends_with("\x1b[?2026l"),
+        "{context}: missing EndSynchronizedUpdate suffix in {ansi:?}"
+    );
+}
+
+/// Checks that every occurrence of `glyph` in `ansi` (except when it is the final
+/// character before SGR reset) is followed by a CSI sequence or explicit MoveTo (`\x1b[row;colH`),
+/// specifically verifying that the next cell emission is preceded by `\x1b[row;colH`.
+fn assert_moveto_follows_non_ascii(ansi: &str, glyph: &str, context: &str) {
+    let mut found = false;
+    for (idx, _) in ansi.match_indices(glyph) {
+        found = true;
+        let rest = &ansi[idx + glyph.len()..];
+        // Skip optional SGR/color transitions before the next cell's MoveTo
+        let mut cursor = rest;
+        loop {
+            if let Some(after_csi) = cursor.strip_prefix("\x1b[") {
+                if let Some(end_idx) = after_csi.find(|c: char| c.is_ascii_alphabetic()) {
+                    let cmd = after_csi.as_bytes()[end_idx] as char;
+                    if cmd == 'H' {
+                        break;
+                    }
+                    // SGR (`m`) or sync end (`l` for `?2026l`) before next cell/end-of-frame
+                    if cmd == 'm' {
+                        cursor = &after_csi[end_idx + 1..];
+                        continue;
+                    }
+                    if after_csi.starts_with("?2026l") {
+                        break;
+                    }
+                }
+            }
+            panic!(
+                "{context}: expected explicit MoveTo after non-ASCII {glyph:?}, got {:?}",
+                &rest[..rest.len().min(48)]
+            );
+        }
+    }
+    assert!(found, "{context}: expected glyph {glyph:?} in ANSI output");
+}
+
+#[tokio::test]
+async fn sync_backend_side_by_side_divider_drag_emits_sync_and_post_non_ascii_moveto() {
+    use std::time::{Duration, Instant};
+
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::{Frame, FramedClient};
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::backend::SyncCrosstermBackend;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use ratatui::{TerminalOptions, Viewport};
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let p1 = app.focused_pane.unwrap();
+
+    let area = Rect::new(0, 0, 120, 30);
+    let writer = SharedVecWriter::default();
+    let mut term = RatatuiTerminal::with_options(
+        SyncCrosstermBackend::new(writer.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )
+    .expect("create fixed terminal");
+
+    let t0 = Instant::now() - Duration::from_millis(200);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0))
+        .unwrap();
+    let _ = writer.take_string();
+
+    // Spawn left pane (p1) and split horizontally into right pane (p2)
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_addr = app.current_tree().find_terminal(p1).unwrap().address.clone();
+
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::SplitPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p2 = app.focused_pane.unwrap();
+    let t2_addr = app.current_tree().find_terminal(p2).unwrap().address.clone();
+
+    // Populate left pane with Nerd Font PUA, ❯, ⚠️, BIDI/soft-hyphen, Arabic harakat, and ASCII run
+    let left_payload = concat!(
+        "\u{E0B0} \u{276F} \u{26A0}\u{FE0F} hello\r\n",
+        "a\u{00AD}\u{202E}b\u{2066}\u{FEFF}c بِسْمِ\r\n"
+    );
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(1, left_payload.as_bytes().to_vec()));
+    app.sessions
+        .get_mut(&t2_addr)
+        .unwrap()
+        .handle_frame(Frame::data(2, "RIGHT_OK شُكْرًا".as_bytes().to_vec()));
+
+    // Render initial side-by-side frame (with sidebar, tabs, and both panes)
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0 + Duration::from_millis(50)))
+        .unwrap();
+    let initial_ansi = writer.take_string();
+    assert_sync_framed(&initial_ansi, "initial side-by-side frame");
+
+    for forbidden in ['\u{FE0F}', '\u{00AD}', '\u{202E}', '\u{2066}', '\u{FEFF}'] {
+        assert!(
+            !initial_ansi.contains(forbidden),
+            "forbidden format/VS char {forbidden:?} leaked in {initial_ansi:?}"
+        );
+    }
+    assert_moveto_follows_non_ascii(&initial_ansi, "\u{E0B0}", "initial PUA");
+    assert_moveto_follows_non_ascii(&initial_ansi, "\u{276F}", "initial prompt ❯");
+    assert_moveto_follows_non_ascii(&initial_ansi, "\u{26A0}", "initial sanitized ⚠");
+    assert_moveto_follows_non_ascii(&initial_ansi, "│", "initial border │");
+    assert!(
+        initial_ansi.contains("hello"),
+        "expected ASCII elision for 'hello' in {initial_ansi:?}"
+    );
+    assert!(
+        initial_ansi.contains("RIGHT_OK"),
+        "expected ASCII elision for 'RIGHT_OK' in {initial_ansi:?}"
+    );
+    for cluster in ["بِ", "سْ", "مِ", "شُ", "كْ", "رً"] {
+        assert_moveto_follows_non_ascii(&initial_ansi, cluster, "initial Arabic cluster");
+    }
+
+    // Drag the side-by-side divider left in two steps and verify every drag frame
+    let divider_0 = app.last_geom.dividers[0];
+    let drag_t = Instant::now();
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: divider_0.line_pos,
+            row: divider_0.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t,
+    );
+
+    // Step 1: Drag 6 columns left
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: divider_0.line_pos.saturating_sub(6),
+            row: divider_0.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(10),
+    );
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), drag_t + Duration::from_millis(10)))
+        .unwrap();
+    let drag1_ansi = writer.take_string();
+    assert_sync_framed(&drag1_ansi, "drag frame 1");
+    let divider_1 = app.last_geom.dividers[0];
+    assert_ne!(divider_1.line_pos, divider_0.line_pos);
+    let panes_area = app.last_panes_area;
+    for y in (panes_area.y + 1)..panes_area.y + panes_area.height.saturating_sub(1) {
+        let expected_moveto = format!("│\x1b[{};{}H", y + 1, divider_1.line_pos + 1);
+        assert!(
+            drag1_ansi.contains(&expected_moveto),
+            "drag frame 1 row {y}: expected MoveTo {expected_moveto:?} after left-pane border │ in {drag1_ansi:?}"
+        );
+    }
+
+    // Step 2: Drag 4 more columns left and release (EndDrag)
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: divider_1.line_pos.saturating_sub(4),
+            row: divider_1.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(20),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: divider_1.line_pos.saturating_sub(4),
+            row: divider_1.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(25),
+    );
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), drag_t + Duration::from_millis(25)))
+        .unwrap();
+    let drag2_ansi = writer.take_string();
+    assert_sync_framed(&drag2_ansi, "drag frame 2 (EndDrag)");
+    let divider_2 = app.last_geom.dividers[0];
+    assert_ne!(divider_2.line_pos, divider_1.line_pos);
+    for y in (panes_area.y + 1)..panes_area.y + panes_area.height.saturating_sub(1) {
+        let expected_moveto = format!("│\x1b[{};{}H", y + 1, divider_2.line_pos + 1);
+        assert!(
+            drag2_ansi.contains(&expected_moveto),
+            "drag frame 2 row {y}: expected MoveTo {expected_moveto:?} after left-pane border │ in {drag2_ansi:?}"
+        );
+    }
+}

@@ -68,11 +68,11 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 - Format/BIDI/soft-hyphen/VS16 inputs do not corrupt pane dividers or Arabic harakat clusters across drag updates.
 
 **Acceptance criteria:**
-- [ ] `tests/ui_snapshots.rs` tests `Terminal<SyncCrosstermBackend<_>>` across side-by-side divider drag with Nerd Font/PUA, `⚠️`, `❯`, Arabic, sidebar, and tabs, asserting exact `\x1b[row;colH` emission after non-ASCII cells, ASCII `MoveTo` elision, and `\x1b[?2026h`/`\x1b[?2026l` framing.
-- [ ] `tests/term.rs` tests `Vt100Screen` format/BIDI/soft-hyphen/VS16/ZWJ sanitization and Arabic harakat preservation end-to-end with `Buffer` and `SyncCrosstermBackend`.
+- [x] `tests/ui_snapshots.rs` tests `Terminal<SyncCrosstermBackend<_>>` across side-by-side divider drag with Nerd Font/PUA, `⚠️`, `❯`, Arabic, sidebar, and tabs, asserting exact `\x1b[row;colH` emission after non-ASCII cells, ASCII `MoveTo` elision, and `\x1b[?2026h`/`\x1b[?2026l` framing.
+- [x] `tests/term.rs` tests `Vt100Screen` format/BIDI/soft-hyphen/VS16/ZWJ sanitization and Arabic harakat preservation end-to-end with `Buffer` and `SyncCrosstermBackend`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Tests pass: `cargo test --test term --test ui_snapshots`
 
 **Dependencies:** Task 2
 

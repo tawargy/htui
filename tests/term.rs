@@ -927,3 +927,81 @@ fn vt100_screen_format_vs_and_zwj_sanitization() {
     assert!(row2.contains("لَّ"), "got {row2:?}");
     assert!(row2.contains("شُ"), "got {row2:?}");
 }
+
+#[derive(Clone, Default)]
+struct SharedVecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl SharedVecWriter {
+    fn take_string(&self) -> String {
+        let mut guard = self.0.lock().unwrap();
+        let bytes = std::mem::take(&mut *guard);
+        String::from_utf8(bytes).expect("valid utf8 ansi stream")
+    }
+}
+
+impl std::io::Write for SharedVecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn vt100_screen_sanitization_end_to_end_with_sync_backend() {
+    use herdr_tui::ui::backend::SyncCrosstermBackend;
+    use ratatui::{Terminal, TerminalOptions, Viewport};
+
+    let mut screen = Vt100Screen::new(30, 4, 100);
+    // Row 0: ⚠️ followed by 'X', then ASCII run "HELLO", then divider '│' and 'Z'
+    screen.process("\u{26A0}\u{FE0F}XHELLO│Z".as_bytes());
+    screen.process(b"\r\n");
+    // Row 1: BIDI / soft-hyphen / ZWJ + Arabic harakat
+    screen.process("a\u{00AD}\u{202E}b\u{2066}\u{FEFF} \u{1F468}\u{200D}\u{1F469} بِ لَّ شُ".as_bytes());
+
+    let area = Rect::new(0, 0, 30, 4);
+    let writer = SharedVecWriter::default();
+    let backend = SyncCrosstermBackend::new(writer.clone());
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )
+    .expect("create fixed terminal");
+
+    terminal
+        .draw(|f| {
+            screen.render_to_buffer(f.area(), f.buffer_mut());
+        })
+        .expect("draw frame");
+
+    let ansi = writer.take_string();
+    assert!(ansi.starts_with("\x1b[?2026h"), "missing sync begin: {ansi:?}");
+    let body = ansi.strip_suffix("\x1b[?25l").unwrap_or(&ansi);
+    assert!(body.ends_with("\x1b[?2026l"), "missing sync end: {ansi:?}");
+
+    // VS16, ZWJ, soft hyphen, BIDI, BOM must not appear anywhere in the ANSI stream
+    for forbidden in ['\u{FE0F}', '\u{200D}', '\u{00AD}', '\u{202E}', '\u{2066}', '\u{FEFF}'] {
+        assert!(
+            !ansi.contains(forbidden),
+            "forbidden char {forbidden:?} leaked into ANSI output: {ansi:?}"
+        );
+    }
+
+    // ⚠️ sanitized to ⚠ at (0,0), immediately followed by MoveTo(1,0) = \x1b[1;2H before 'X',
+    // then consecutive ASCII "XHELLO" elides MoveTo until '│', then MoveTo(8,0) = \x1b[1;9H before 'Z'
+    assert!(
+        ansi.contains("⚠\x1b[1;2HXHELLO│\x1b[1;9HZ"),
+        "expected MoveTo after ⚠ and │ with ASCII elision in {ansi:?}"
+    );
+
+    // Row 1: "ab" elides MoveTo, Arabic harakat preserved and followed by MoveTo
+    assert!(ansi.contains("ab"), "expected sanitized 'ab' in {ansi:?}");
+    assert!(ansi.contains("بِ"), "expected 'بِ' preserved in {ansi:?}");
+    assert!(ansi.contains("لَّ"), "expected 'لَّ' preserved in {ansi:?}");
+    assert!(ansi.contains("شُ"), "expected 'شُ' preserved in {ansi:?}");
+}
