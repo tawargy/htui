@@ -89,16 +89,16 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 **Description:** Run the complete workspace test suite, formatter check, and strict clippy check across all targets, then reinstall the updated `htui` binary locally with `cargo install --path . --locked`.
 
 **Acceptance criteria:**
-- [ ] `cargo test` passes with zero failures or skipped assertions.
-- [ ] `cargo fmt --all -- --check` passes with no formatting diffs.
-- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
-- [ ] `cargo install --path . --locked` succeeds.
+- [x] `cargo test` passes with zero failures or skipped assertions.
+- [x] `cargo fmt --all -- --check` passes with no formatting diffs.
+- [x] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [x] `cargo install --path . --locked` succeeds.
 
 **Verification:**
-- [ ] `cargo test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo install --path . --locked`
+- [x] `cargo test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --all-targets -- -D warnings`
+- [x] `cargo install --path . --locked`
 
 **Dependencies:** Task 3
 
@@ -110,6 +110,6 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 ---
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
-- [ ] Updated `htui` binary installed and ready for manual verification in Ghostty
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
+- [x] Updated `htui` binary installed and ready for manual verification in Ghostty

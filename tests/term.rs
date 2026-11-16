@@ -960,7 +960,8 @@ fn vt100_screen_sanitization_end_to_end_with_sync_backend() {
     screen.process("\u{26A0}\u{FE0F}XHELLO│Z".as_bytes());
     screen.process(b"\r\n");
     // Row 1: BIDI / soft-hyphen / ZWJ + Arabic harakat
-    screen.process("a\u{00AD}\u{202E}b\u{2066}\u{FEFF} \u{1F468}\u{200D}\u{1F469} بِ لَّ شُ".as_bytes());
+    screen
+        .process("a\u{00AD}\u{202E}b\u{2066}\u{FEFF} \u{1F468}\u{200D}\u{1F469} بِ لَّ شُ".as_bytes());
 
     let area = Rect::new(0, 0, 30, 4);
     let writer = SharedVecWriter::default();
@@ -980,12 +981,17 @@ fn vt100_screen_sanitization_end_to_end_with_sync_backend() {
         .expect("draw frame");
 
     let ansi = writer.take_string();
-    assert!(ansi.starts_with("\x1b[?2026h"), "missing sync begin: {ansi:?}");
+    assert!(
+        ansi.starts_with("\x1b[?2026h"),
+        "missing sync begin: {ansi:?}"
+    );
     let body = ansi.strip_suffix("\x1b[?25l").unwrap_or(&ansi);
     assert!(body.ends_with("\x1b[?2026l"), "missing sync end: {ansi:?}");
 
     // VS16, ZWJ, soft hyphen, BIDI, BOM must not appear anywhere in the ANSI stream
-    for forbidden in ['\u{FE0F}', '\u{200D}', '\u{00AD}', '\u{202E}', '\u{2066}', '\u{FEFF}'] {
+    for forbidden in [
+        '\u{FE0F}', '\u{200D}', '\u{00AD}', '\u{202E}', '\u{2066}', '\u{FEFF}',
+    ] {
         assert!(
             !ansi.contains(forbidden),
             "forbidden char {forbidden:?} leaked into ANSI output: {ansi:?}"

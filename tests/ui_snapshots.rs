@@ -4808,7 +4808,12 @@ async fn sync_backend_side_by_side_divider_drag_emits_sync_and_post_non_ascii_mo
         &store,
     )
     .await;
-    let t1_addr = app.current_tree().find_terminal(p1).unwrap().address.clone();
+    let t1_addr = app
+        .current_tree()
+        .find_terminal(p1)
+        .unwrap()
+        .address
+        .clone();
 
     dispatch_action(
         AppAction::Spawn {
@@ -4828,7 +4833,12 @@ async fn sync_backend_side_by_side_divider_drag_emits_sync_and_post_non_ascii_mo
     )
     .await;
     let p2 = app.focused_pane.unwrap();
-    let t2_addr = app.current_tree().find_terminal(p2).unwrap().address.clone();
+    let t2_addr = app
+        .current_tree()
+        .find_terminal(p2)
+        .unwrap()
+        .address
+        .clone();
 
     // Populate left pane with Nerd Font PUA, ❯, ⚠️, BIDI/soft-hyphen, Arabic harakat, and ASCII run
     let left_payload = concat!(

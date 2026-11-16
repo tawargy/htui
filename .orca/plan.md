@@ -60,12 +60,12 @@ Task 1: Harden Vt100Screen::cell against Cf/soft-hyphen/VS15/VS16/ZWJ clusters
 
 ### Phase 3: End-to-End ANSI & Divider-Drag Regression Verification
 - [x] **Task 3:** Add raw ANSI byte-stream (`Vec<u8>`) and side-by-side divider-drag tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
-- [ ] **Task 4:** Run full verification gates (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`) and reinstall `htui` (`cargo install --path . --locked`).
+- [x] **Task 4:** Run full verification gates (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`) and reinstall `htui` (`cargo install --path . --locked`).
 
 ### Checkpoint 2: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [ ] Reinstalled `htui` binary verified
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] Reinstalled `htui` binary verified
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |

@@ -245,10 +245,7 @@ mod tests {
             cell_with("│", s),
             cell_with("D", s),
         ];
-        let items = cells
-            .iter()
-            .enumerate()
-            .map(|(x, c)| (x as u16, 0u16, c));
+        let items = cells.iter().enumerate().map(|(x, c)| (x as u16, 0u16, c));
 
         backend.draw(items).unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -256,7 +253,10 @@ mod tests {
         // First cell (0,0) -> MoveTo(0,0) = \x1b[1;1H
         assert!(out.contains("\x1b[1;1HA"), "got {out:?}");
         // Consecutive ASCII 'B' at (1,0) and '❯' at (2,0) follow immediately without MoveTo
-        assert!(out.contains("AB❯"), "expected ASCII run elision, got {out:?}");
+        assert!(
+            out.contains("AB❯"),
+            "expected ASCII run elision, got {out:?}"
+        );
         // Immediately after non-ASCII '❯', cell (3,0) MUST receive explicit MoveTo(3,0) = \x1b[1;4H
         assert!(
             out.contains("❯\x1b[1;4HC"),
@@ -299,18 +299,39 @@ mod tests {
         assert!(out.contains("\x1b[1m"), "missing Bold in {out:?}");
         assert!(out.contains("\x1b[2m"), "missing Dim in {out:?}");
         assert!(out.contains("\x1b[3m"), "missing Italic in {out:?}");
-        assert!(out.contains("\x1b[58;5;1m"), "missing Red underline color in {out:?}");
+        assert!(
+            out.contains("\x1b[58;5;1m"),
+            "missing Red underline color in {out:?}"
+        );
         // Transition c0 -> c1: NoItalic (23m), NormalIntensity (22m), re-emit Dim (2m), Reset underline color (59m)
         let after_a = out.split('a').nth(1).unwrap();
         let before_b = after_a.split('b').next().unwrap();
-        assert!(before_b.contains("\x1b[23m"), "missing NoItalic in {before_b:?}");
-        assert!(before_b.contains("\x1b[22m"), "missing NormalIntensity in {before_b:?}");
-        assert!(before_b.contains("\x1b[2m"), "missing re-emitted Dim in {before_b:?}");
-        assert!(before_b.contains("\x1b[59m"), "missing underline color reset in {before_b:?}");
+        assert!(
+            before_b.contains("\x1b[23m"),
+            "missing NoItalic in {before_b:?}"
+        );
+        assert!(
+            before_b.contains("\x1b[22m"),
+            "missing NormalIntensity in {before_b:?}"
+        );
+        assert!(
+            before_b.contains("\x1b[2m"),
+            "missing re-emitted Dim in {before_b:?}"
+        );
+        assert!(
+            before_b.contains("\x1b[59m"),
+            "missing underline color reset in {before_b:?}"
+        );
         // Transition c1 -> c2: NormalIntensity (22m) and Underlined (4m)
         let after_b = out.split('b').nth(1).unwrap();
         let before_c = after_b.split('c').next().unwrap();
-        assert!(before_c.contains("\x1b[22m"), "missing NormalIntensity in {before_c:?}");
-        assert!(before_c.contains("\x1b[4m"), "missing Underlined in {before_c:?}");
+        assert!(
+            before_c.contains("\x1b[22m"),
+            "missing NormalIntensity in {before_c:?}"
+        );
+        assert!(
+            before_c.contains("\x1b[4m"),
+            "missing Underlined in {before_c:?}"
+        );
     }
 }
