@@ -144,7 +144,7 @@ impl TuiApp {
             .layouts
             .spaces
             .entry(space)
-            .or_insert_with(SpaceLayout::new)
+            .or_default()
             .active_panel_mut_or_default()
             .tree
     }
@@ -250,11 +250,7 @@ impl TuiApp {
 
     fn open_split_spawn_dialog(&mut self, axis: SplitAxis) {
         let space_name = self.active_space.clone();
-        let entry = self
-            .layouts
-            .spaces
-            .entry(space_name)
-            .or_insert_with(SpaceLayout::new);
+        let entry = self.layouts.spaces.entry(space_name).or_default();
         let panel = entry.active_panel_mut_or_default();
         panel.ensure_valid_focus();
         let panel_id = panel.id;
@@ -286,11 +282,7 @@ impl TuiApp {
             self.set_focused_pane(Some(pane_id));
             return;
         }
-        let space_layout = self
-            .layouts
-            .spaces
-            .entry(space_name.clone())
-            .or_insert_with(SpaceLayout::new);
+        let space_layout = self.layouts.spaces.entry(space_name.clone()).or_default();
         let pane_id = if space_layout.is_single_empty_placeholder() {
             let panel = space_layout.active_panel_mut_or_default();
             if let Some(pid) = panel
@@ -821,7 +813,7 @@ impl TuiApp {
                     .layouts
                     .spaces
                     .entry(space_name)
-                    .or_insert_with(SpaceLayout::new)
+                    .or_default()
                     .active_panel_mut_or_default()
                     .id;
                 self.open_spawn_for_target(SpawnTarget::IntoPane {
@@ -943,15 +935,12 @@ impl TuiApp {
             }
         }
         self.active_space = space.clone();
-        let entry = self
-            .layouts
-            .spaces
-            .entry(space)
-            .or_insert_with(SpaceLayout::new);
+        let entry = self.layouts.spaces.entry(space).or_default();
         entry.ensure_valid_active_panel();
-        self.focused_pane = entry
-            .active_panel()
-            .and_then(|p| p.focused_pane.or_else(|| p.tree.pane_ids().into_iter().next()));
+        self.focused_pane = entry.active_panel().and_then(|p| {
+            p.focused_pane
+                .or_else(|| p.tree.pane_ids().into_iter().next())
+        });
         self.dirty = true;
         removed_prev
     }
@@ -1494,11 +1483,7 @@ impl TuiApp {
 
     pub fn place_spawned_terminal(&mut self, addr: &str, target: SpawnTarget) {
         let space_name = self.active_space.clone();
-        let space_layout = self
-            .layouts
-            .spaces
-            .entry(space_name)
-            .or_insert_with(SpaceLayout::new);
+        let space_layout = self.layouts.spaces.entry(space_name).or_default();
         let term_ref = TermRef {
             address: addr.to_string(),
         };
@@ -1583,11 +1568,7 @@ impl TuiApp {
             if space_name != UNASSIGNED_SPACE {
                 self.model.declared_spaces.insert(space_name.clone());
             }
-            let space_layout = self
-                .layouts
-                .spaces
-                .entry(space_name.clone())
-                .or_insert_with(SpaceLayout::new);
+            let space_layout = self.layouts.spaces.entry(space_name.clone()).or_default();
             let active_was_occupied = space_layout
                 .active_panel()
                 .is_some_and(PanelLayout::has_terminals);
@@ -1597,7 +1578,9 @@ impl TuiApp {
                     .focused_pane
                     .or_else(|| panel.tree.pane_ids().into_iter().next())
                 {
-                    panel.tree.set_terminal(pid, Some(TermRef { address: addr }));
+                    panel
+                        .tree
+                        .set_terminal(pid, Some(TermRef { address: addr }));
                     panel.focused_pane = Some(pid);
                 }
             } else {

@@ -20,8 +20,8 @@ use crate::hc::events::{EventMessage, EventStream};
 use crate::hc::framed::FramedClient;
 use crate::hc::rpc::RpcClient;
 use crate::hc::types::{EventPayload, RunParams};
-use crate::layout::presence::PresenceManager;
 use crate::layout::panel::SpaceLayout;
+use crate::layout::presence::PresenceManager;
 use crate::layout::store::LayoutStore;
 use crate::model::reducer::{apply, ModelInput};
 use crate::model::tree::UNASSIGNED_SPACE;
@@ -365,11 +365,7 @@ pub async fn reconcile_startup_layouts(
     }
 
     let active = app.active_space.clone();
-    let entry = app
-        .layouts
-        .spaces
-        .entry(active)
-        .or_insert_with(SpaceLayout::new);
+    let entry = app.layouts.spaces.entry(active).or_default();
     entry.ensure_valid_active_panel();
     let active_pane_ids = entry
         .active_panel()
@@ -377,7 +373,7 @@ pub async fn reconcile_startup_layouts(
         .unwrap_or_default();
     if app
         .focused_pane
-        .is_none_or(|pid| !active_pane_ids.contains(&pid))
+        .map_or(true, |pid| !active_pane_ids.contains(&pid))
     {
         app.focused_pane = active_pane_ids.into_iter().next();
     }
@@ -573,7 +569,9 @@ pub async fn dispatch_action(
                         }
                         let space_key = app.active_space.clone();
                         if let Some(space_layout) = app.layouts.spaces.get(&space_key) {
-                            let _ = store.save_space(Some(client), &space_key, space_layout).await;
+                            let _ = store
+                                .save_space(Some(client), &space_key, space_layout)
+                                .await;
                         }
                     }
                     Err(e) => {

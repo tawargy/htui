@@ -75,16 +75,18 @@ pub fn render_tab_bar(
             } else {
                 String::new()
             };
-            let label = match panel
-                .primary_terminal()
-                .map(|tr| tr.address.as_str())
-            {
+            let label = match panel.primary_terminal().map(|tr| tr.address.as_str()) {
                 Some(addr) => match terminals.get(addr) {
                     Some(term) => {
                         let entry = TerminalEntry {
                             terminal: term.clone(),
                         };
-                        format!(" {} {}{} ", entry.status_glyph(), entry.display_name(), extra)
+                        format!(
+                            " {} {}{} ",
+                            entry.status_glyph(),
+                            entry.display_name(),
+                            extra
+                        )
                     }
                     None => format!(" {}{} ", addr, extra),
                 },
@@ -291,9 +293,7 @@ mod tests {
         let area = Rect::new(0, 0, 24, 1);
         let mut buf = Buffer::empty(area);
         let hits = render_tab_bar(area, &mut buf, Some(&space), "api", &terminals);
-        assert!(hits
-            .iter()
-            .any(|h| matches!(h, TabHitbox::NewTerminal(_))));
+        assert!(hits.iter().any(|h| matches!(h, TabHitbox::NewTerminal(_))));
         assert!(!hits
             .iter()
             .any(|h| matches!(h, TabHitbox::SplitHorizontal(_))));

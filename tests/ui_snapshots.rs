@@ -687,9 +687,20 @@ fn sidebar_new_space_action_styling_unselected_and_selected() {
     // Entire row must have WAVE_BLUE2 bg, FUJI_WHITE fg, BOLD modifier
     for x in 1..31 {
         let cell = buf_sel.cell((x, 1)).expect("selected row cell");
-        assert_eq!(cell.bg, Theme::WAVE_BLUE2, "cell at x={x} should have WAVE_BLUE2 bg");
-        assert_eq!(cell.fg, Theme::FUJI_WHITE, "cell at x={x} should have FUJI_WHITE fg");
-        assert!(cell.modifier.contains(Modifier::BOLD), "cell at x={x} should have BOLD modifier");
+        assert_eq!(
+            cell.bg,
+            Theme::WAVE_BLUE2,
+            "cell at x={x} should have WAVE_BLUE2 bg"
+        );
+        assert_eq!(
+            cell.fg,
+            Theme::FUJI_WHITE,
+            "cell at x={x} should have FUJI_WHITE fg"
+        );
+        assert!(
+            cell.modifier.contains(Modifier::BOLD),
+            "cell at x={x} should have BOLD modifier"
+        );
     }
 }
 
@@ -2427,7 +2438,10 @@ async fn reconcile_startup_layouts_cleans_stale_and_unassigned_while_preserving_
     let saved_work = doc.spaces.get("work").expect("work saved");
     assert!(saved_work.has_terminals());
     let saved_work_tree = &saved_work.panels[0].tree;
-    assert_eq!(saved_work_tree.find_terminal(ap1).unwrap().address, "t-live");
+    assert_eq!(
+        saved_work_tree.find_terminal(ap1).unwrap().address,
+        "t-live"
+    );
     assert!(saved_work_tree
         .pane_ids()
         .into_iter()
@@ -2750,9 +2764,15 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
     assert!(!app.sessions.contains_key("t2"));
     assert_eq!(app.current_tree().pane_ids(), vec![web_p2]);
     let (remote_doc, _) = store.load(Some(&rpc)).await.unwrap();
-    assert_eq!(remote_doc.spaces["web"].panels[0].tree.pane_ids(), vec![web_p2]);
+    assert_eq!(
+        remote_doc.spaces["web"].panels[0].tree.pane_ids(),
+        vec![web_p2]
+    );
     let local_doc = LayoutStore::load_local(&fallback_path);
-    assert_eq!(local_doc.spaces["web"].panels[0].tree.pane_ids(), vec![web_p2]);
+    assert_eq!(
+        local_doc.spaces["web"].panels[0].tree.pane_ids(),
+        vec![web_p2]
+    );
 
     // 3. Switch to "jobs" (finished t4), close with Ctrl+b x -> Remove + RemoveLayout("jobs")
     app.switch_space("jobs".into());
@@ -3362,4 +3382,534 @@ fn draft_space_lifecycle_close_pane_switch_quit_and_disconnected_startup() {
         i,
         SidebarItem::Space { name, .. } if name == "draft" || name == UNASSIGNED_SPACE
     )));
+}
+
+#[tokio::test]
+async fn multipanel_spawn_new_panel_and_sidebar_isolation() {
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::FramedClient;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use herdr_tui::ui::sidebar::SidebarItem;
+    use herdr_tui::ui::tabs::TabHitbox;
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    app.model.declared_spaces.insert("api".into());
+    let now = std::time::Instant::now();
+    let ctrl_b = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let key_n = crossterm::event::KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+
+    // 1. Spawn first terminal into initial empty placeholder panel
+    let actions1 = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now,
+    );
+    assert!(actions1.is_empty());
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "claude".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::NewPanel,
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 1);
+    let addr1 = app.focused_terminal_addr().expect("first terminal");
+
+    // 2. Ctrl+B n on occupied pane targets SpawnTarget::NewPanel and creates Panel 2 without overwriting Panel 1
+    app.handle_key(ctrl_b, now);
+    app.handle_key(key_n, now + std::time::Duration::from_millis(20));
+    match &app.dialog {
+        Some(ActiveDialog::Spawn(d)) => assert_eq!(d.target, SpawnTarget::NewPanel),
+        other => panic!("expected SpawnDialog, got {other:?}"),
+    }
+    let spawn2_actions = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(40),
+    );
+    for act in spawn2_actions {
+        dispatch_action(act, &mut app, Some(&rpc), Some(&framed), &store).await;
+    }
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 2);
+    let addr2 = app.focused_terminal_addr().expect("second terminal");
+    assert_ne!(addr1, addr2);
+    assert_eq!(
+        app.layouts.spaces["api"].panels[0].terminal_addresses(),
+        vec![addr1.clone()]
+    );
+    assert_eq!(
+        app.layouts.spaces["api"].panels[1].terminal_addresses(),
+        vec![addr2.clone()]
+    );
+
+    // 3. Clicking [+ New Terminal] button also sets SpawnTarget::NewPanel
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf, now);
+    let new_rect = app
+        .last_tabs_geom
+        .iter()
+        .find_map(|h| match h {
+            TabHitbox::NewTerminal(r) => Some(*r),
+            _ => None,
+        })
+        .expect("NewTerminal hitbox");
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: new_rect.x + 1,
+            row: new_rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        now,
+    );
+    match &app.dialog {
+        Some(ActiveDialog::Spawn(d)) => assert_eq!(d.target, SpawnTarget::NewPanel),
+        other => panic!("expected SpawnDialog, got {other:?}"),
+    }
+    app.dialog = None;
+
+    // 4. Selecting an unplaced terminal in sidebar opens Panel 3 instead of overwriting Panel 2
+    let mut t_ext = Terminal {
+        address: "t-ext".into(),
+        state: "live".into(),
+        argv: vec!["claude".into()],
+        created_ms: 999,
+        ..Default::default()
+    };
+    t_ext.labels.insert("space".into(), "api".into());
+    app.model.terminals.insert("t-ext".into(), t_ext);
+    app.refresh_sidebar();
+    app.sidebar_focused = true;
+    app.sidebar.active_panel = SidebarPanel::Agents;
+    let ext_idx = app
+        .sidebar
+        .agent_items
+        .iter()
+        .position(|i| matches!(i, SidebarItem::Terminal { address, .. } if address == "t-ext"))
+        .expect("t-ext in sidebar");
+    app.sidebar.agent_selected = ext_idx;
+    let sb_actions = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now,
+    );
+    assert!(sb_actions.iter().any(|a| matches!(
+        a,
+        AppAction::AttachTerminal { terminal, .. } if terminal == "t-ext"
+    )));
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 3);
+    assert_eq!(app.focused_terminal_addr().as_deref(), Some("t-ext"));
+    assert_eq!(
+        app.layouts.spaces["api"].panels[1].terminal_addresses(),
+        vec![addr2.clone()]
+    );
+
+    // 5. Selecting addr1 in sidebar focuses Panel 1 without creating a duplicate panel
+    app.sidebar_focused = true;
+    app.sidebar.active_panel = SidebarPanel::Agents;
+    let t1_idx = app
+        .sidebar
+        .agent_items
+        .iter()
+        .position(|i| matches!(i, SidebarItem::Terminal { address, .. } if *address == addr1))
+        .expect("addr1 in sidebar");
+    app.sidebar.agent_selected = t1_idx;
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now,
+    );
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 3);
+    assert_eq!(app.focused_terminal_addr(), Some(addr1));
+}
+
+#[tokio::test]
+async fn multipanel_per_panel_splits_and_panel_switching() {
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::FramedClient;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use herdr_tui::ui::tabs::TabHitbox;
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    app.model.declared_spaces.insert("api".into());
+    for _ in 0..2 {
+        dispatch_action(
+            AppAction::Spawn {
+                command_or_template: "sh".into(),
+                task: String::new(),
+                space: "api".into(),
+                target: SpawnTarget::NewPanel,
+            },
+            &mut app,
+            Some(&rpc),
+            Some(&framed),
+            &store,
+        )
+        .await;
+    }
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 2);
+    let p1_id = app.layouts.spaces["api"].panels[0].id;
+    let p2_id = app.layouts.spaces["api"].panels[1].id;
+    let p2_addr = app.layouts.spaces["api"].panels[1].terminal_addresses()[0].clone();
+
+    let now = std::time::Instant::now();
+    let ctrl_b = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
+    // Switch back to Panel 1 using Ctrl+B [
+    app.handle_key(ctrl_b, now);
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(20),
+    );
+    assert_eq!(app.active_panel_id(), Some(p1_id));
+
+    // Split Panel 1 horizontally via Ctrl+B H -> opens SplitPane{Horizontal}, spawns into new pane
+    app.handle_key(ctrl_b, now);
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT),
+        now + std::time::Duration::from_millis(20),
+    );
+    assert!(matches!(
+        &app.dialog,
+        Some(ActiveDialog::Spawn(d)) if matches!(d.target, SpawnTarget::SplitPane { panel_id, axis: SplitAxis::Horizontal, .. } if panel_id == p1_id)
+    ));
+    let spawn_h = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(40),
+    );
+    for act in spawn_h {
+        dispatch_action(act, &mut app, Some(&rpc), Some(&framed), &store).await;
+    }
+    assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 2);
+    assert_eq!(app.layouts.spaces["api"].panels[1].tree.pane_ids().len(), 1);
+
+    // Split Panel 1 vertically via [+V] tab bar button
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf, now);
+    let rendered = buffer_to_string(&buf);
+    assert!(rendered.contains("(+1)"));
+    let split_v_rect = app
+        .last_tabs_geom
+        .iter()
+        .find_map(|h| match h {
+            TabHitbox::SplitVertical(r) => Some(*r),
+            _ => None,
+        })
+        .expect("SplitVertical hitbox");
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: split_v_rect.x + 1,
+            row: split_v_rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        now,
+    );
+    assert!(matches!(
+        &app.dialog,
+        Some(ActiveDialog::Spawn(d)) if matches!(d.target, SpawnTarget::SplitPane { panel_id, axis: SplitAxis::Vertical, .. } if panel_id == p1_id)
+    ));
+    let spawn_v = app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(40),
+    );
+    for act in spawn_v {
+        dispatch_action(act, &mut app, Some(&rpc), Some(&framed), &store).await;
+    }
+    assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 3);
+    assert_eq!(app.layouts.spaces["api"].panels[1].tree.pane_ids().len(), 1);
+
+    // Also verify Ctrl+B % + Ctrl+B n (IntoPane) inside Panel 1 only
+    app.handle_key(ctrl_b, now);
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Char('%'), KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(20),
+    );
+    assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 4);
+    let empty_pane_id = app.focused_pane.expect("new empty split pane");
+    app.handle_key(ctrl_b, now);
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(20),
+    );
+    assert!(matches!(
+        &app.dialog,
+        Some(ActiveDialog::Spawn(d)) if d.target == SpawnTarget::IntoPane { panel_id: p1_id, pane_id: empty_pane_id }
+    ));
+    app.dialog = None;
+    let p1_saved_focus = app.focused_pane;
+
+    // Click Panel 2 tab -> switches active panel to p2, restores p2 focus, preserves p1 focus/tree
+    let mut buf2 = Buffer::empty(area);
+    app.render(area, &mut buf2, now);
+    let rendered2 = buffer_to_string(&buf2);
+    assert!(rendered2.contains("(+3)"));
+    let p2_tab_rect = app
+        .last_tabs_geom
+        .iter()
+        .find_map(|h| match h {
+            TabHitbox::Panel { panel_id, rect } if *panel_id == p2_id => Some(*rect),
+            _ => None,
+        })
+        .expect("p2 tab hitbox");
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: p2_tab_rect.x + 1,
+            row: p2_tab_rect.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        now,
+    );
+    assert_eq!(app.active_panel_id(), Some(p2_id));
+    assert_eq!(app.focused_terminal_addr(), Some(p2_addr));
+    assert_eq!(app.current_tree().pane_ids().len(), 1);
+
+    // Switch back to Panel 1 via Ctrl+B ] -> restores Panel 1's 4-pane tree and saved focus
+    app.handle_key(ctrl_b, now);
+    app.handle_key(
+        crossterm::event::KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+        now + std::time::Duration::from_millis(20),
+    );
+    assert_eq!(app.active_panel_id(), Some(p1_id));
+    assert_eq!(app.focused_pane, p1_saved_focus);
+    assert_eq!(app.current_tree().pane_ids().len(), 4);
+}
+
+#[tokio::test]
+async fn multipanel_close_pane_and_core_event_pruning() {
+    use fake_hc::{make_terminal, FakeHcServer};
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::hc::types::EventPayload;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::event_loop::{dispatch_action, handle_core_event};
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    for addr in ["t1", "t2", "t3"] {
+        let mut fake = make_terminal(addr, "sh");
+        fake["reported"] = serde_json::json!(true);
+        fake["labels"] = serde_json::json!({ "space": "api" });
+        srv.add_terminal(fake).await;
+    }
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    for term in rpc.terminal_list(true).await.unwrap().terminals {
+        app.sessions.insert(
+            term.address.clone(),
+            AttachSession::new(term.address.clone(), 80, 24),
+        );
+        app.model.terminals.insert(term.address.clone(), term);
+    }
+    app.model.declared_spaces.insert("api".into());
+
+    let (mut api_space, p1_id, p1_pane1) = SpaceLayout::with_single(Some(TermRef {
+        address: "t1".into(),
+    }));
+    let p1_pane2 = api_space
+        .panel_mut(p1_id)
+        .unwrap()
+        .tree
+        .split(
+            p1_pane1,
+            SplitAxis::Horizontal,
+            Some(TermRef {
+                address: "t2".into(),
+            }),
+        )
+        .unwrap();
+    api_space.panel_mut(p1_id).unwrap().focused_pane = Some(p1_pane2);
+    let (p2_id, _) = api_space.add_panel(Some(TermRef {
+        address: "t3".into(),
+    }));
+    api_space.set_active_panel(p1_id);
+    app.layouts.spaces.insert("api".into(), api_space);
+    app.focused_pane = Some(p1_pane2);
+
+    let now = std::time::Instant::now();
+    let ctrl_b = crossterm::event::KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+    let key_x = crossterm::event::KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+
+    // 1. Close t2 in multi-pane Panel 1 -> Panel 1 shrinks to 1 pane (t1), Panel 2 (t3) untouched
+    app.handle_key(ctrl_b, now);
+    let actions1 = app.handle_key(key_x, now + std::time::Duration::from_millis(20));
+    assert!(actions1.contains(&AppAction::Kill("t2".into())));
+    assert!(actions1.contains(&AppAction::SaveLayout("api".into())));
+    assert!(!actions1.contains(&AppAction::RemoveLayout("api".into())));
+    for act in actions1 {
+        dispatch_action(act, &mut app, Some(&rpc), None, &store).await;
+    }
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 2);
+    assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 1);
+    assert_eq!(
+        app.layouts.spaces["api"].panels[1].terminal_addresses(),
+        vec!["t3".to_string()]
+    );
+
+    // 2. Switch to Panel 2 and trigger core "removed" event on t3 -> Panel 2 is pruned, Panel 1 remains
+    app.switch_panel(p2_id);
+    assert_eq!(app.active_panel_id(), Some(p2_id));
+    handle_core_event(
+        EventPayload {
+            seq: 1,
+            terminal: Some("t3".into()),
+            event_type: "removed".into(),
+            data: serde_json::json!({}),
+        },
+        &mut app,
+        Some(&rpc),
+        &store,
+    )
+    .await;
+    assert_eq!(app.layouts.spaces["api"].panels.len(), 1);
+    assert_eq!(app.active_panel_id(), Some(p1_id));
+    assert_eq!(app.focused_terminal_addr().as_deref(), Some("t1"));
+}
+
+#[tokio::test]
+async fn reconcile_startup_layouts_places_external_terminals_into_isolated_panels_and_migrates_legacy(
+) {
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::hc::types::EventPayload;
+    use herdr_tui::layout::store::{LayoutStore, LAYOUT_DOC_NAME};
+    use herdr_tui::ui::event_loop::{handle_core_event, reconcile_startup_layouts};
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    // Seed legacy SplitTree doc for "legacy" space
+    let (legacy_tree, _) = SplitTree::with_single(Some(TermRef {
+        address: "t-leg".into(),
+    }));
+    rpc.doc_set(
+        LAYOUT_DOC_NAME,
+        serde_json::json!({ "spaces": { "legacy": legacy_tree } }),
+        0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let mut app = TuiApp::new(Config::default(), None);
+    let (loaded, _) = store.load(Some(&rpc)).await.unwrap();
+    app.layouts = loaded;
+
+    let mut t_leg = Terminal {
+        address: "t-leg".into(),
+        state: "live".into(),
+        argv: vec!["zsh".into()],
+        created_ms: 50,
+        ..Default::default()
+    };
+    t_leg.labels.insert("space".into(), "legacy".into());
+
+    // Three external live terminals in "work" with out-of-order insertion & tied created_ms
+    let mut t_c = Terminal {
+        address: "t-c".into(),
+        state: "live".into(),
+        argv: vec!["bash".into()],
+        created_ms: 200,
+        ..Default::default()
+    };
+    t_c.labels.insert("space".into(), "work".into());
+    let mut t_a = Terminal {
+        address: "t-a".into(),
+        state: "live".into(),
+        argv: vec!["claude".into()],
+        created_ms: 100,
+        ..Default::default()
+    };
+    t_a.labels.insert("space".into(), "work".into());
+    let mut t_b = Terminal {
+        address: "t-b".into(),
+        state: "live".into(),
+        argv: vec!["sh".into()],
+        created_ms: 200,
+        ..Default::default()
+    };
+    t_b.labels.insert("space".into(), "work".into());
+
+    app.model.terminals.insert("t-leg".into(), t_leg);
+    app.model.terminals.insert("t-c".into(), t_c);
+    app.model.terminals.insert("t-a".into(), t_a);
+    app.model.terminals.insert("t-b".into(), t_b);
+
+    reconcile_startup_layouts(&mut app, Some(&rpc), &store, None).await;
+
+    // Legacy space migrated cleanly
+    assert_eq!(app.layouts.spaces["legacy"].panels.len(), 1);
+    assert_eq!(
+        app.layouts.spaces["legacy"].panels[0].terminal_addresses(),
+        vec!["t-leg".to_string()]
+    );
+
+    // Work space has 3 isolated panels sorted by (created_ms, address): t-a, t-b, t-c
+    let work = &app.layouts.spaces["work"];
+    assert_eq!(work.panels.len(), 3);
+    assert_eq!(work.panels[0].terminal_addresses(), vec!["t-a".to_string()]);
+    assert_eq!(work.panels[1].terminal_addresses(), vec!["t-b".to_string()]);
+    assert_eq!(work.panels[2].terminal_addresses(), vec!["t-c".to_string()]);
+    assert_eq!(work.active_panel, Some(work.panels[0].id));
+
+    // Background created event for a new terminal in "work" adds Panel 4 without stealing active_panel
+    handle_core_event(
+        EventPayload {
+            seq: 1,
+            terminal: Some("t-d".into()),
+            event_type: "created".into(),
+            data: serde_json::json!({
+                "address": "t-d",
+                "state": "live",
+                "argv": ["zsh"],
+                "created_ms": 300,
+                "labels": { "space": "work" }
+            }),
+        },
+        &mut app,
+        Some(&rpc),
+        &store,
+    )
+    .await;
+    let work_after = &app.layouts.spaces["work"];
+    assert_eq!(work_after.panels.len(), 4);
+    assert_eq!(
+        work_after.panels[3].terminal_addresses(),
+        vec!["t-d".to_string()]
+    );
+    assert_eq!(work_after.active_panel, Some(work_after.panels[0].id));
 }

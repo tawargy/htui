@@ -106,11 +106,11 @@ src/layout/panel.rs (PanelId, PanelLayout, SpaceLayout)
 - [x] `cargo test` passes with zero failures
 
 ### Phase 4: End-to-End Snapshot & Integration Verification
-- [ ] Task 6: Add comprehensive multi-panel isolation, splitting, tab bar, lifecycle, and startup reconciliation tests in `tests/ui_snapshots.rs` and `tests/layout.rs`, and run `fmt` + `clippy`
+- [x] Task 6: Add comprehensive multi-panel isolation, splitting, tab bar, lifecycle, and startup reconciliation tests in `tests/ui_snapshots.rs` and `tests/layout.rs`, and run `fmt` + `clippy`
 
 ### Final Checkpoint: Ready for Review
-- [ ] All 7 acceptance criteria verified by automated tests
-- [ ] `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` pass
+- [x] All 7 acceptance criteria verified by automated tests
+- [x] `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` pass
 
 ---
 

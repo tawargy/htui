@@ -260,3 +260,52 @@ async fn legacy_split_tree_migration_and_multipanel_roundtrip() {
     let raw_saved = std::fs::read_to_string(&local_legacy_path).unwrap();
     assert!(raw_saved.contains("\"panels\""));
 }
+
+#[tokio::test]
+async fn multipanel_persistence_under_cas_conflicts_and_per_space_merge() {
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc1 = RpcClient::connect(srv.socket_path()).await.expect("rpc1");
+    let rpc2 = RpcClient::connect(srv.socket_path()).await.expect("rpc2");
+    let tmp = TempDir::new().unwrap();
+    let store1 = LayoutStore::new(tmp.path().join("layout1.json"), &rpc1.hello().methods);
+    let store2 = LayoutStore::new(tmp.path().join("layout2.json"), &rpc2.hello().methods);
+
+    let (mut api_space, api_p1, api_pane1) = SpaceLayout::with_single(Some(TermRef {
+        address: "t-api-1".into(),
+    }));
+    api_space
+        .panel_mut(api_p1)
+        .unwrap()
+        .tree
+        .split(
+            api_pane1,
+            SplitAxis::Horizontal,
+            Some(TermRef {
+                address: "t-api-2".into(),
+            }),
+        )
+        .unwrap();
+    api_space.add_panel(Some(TermRef {
+        address: "t-api-3".into(),
+    }));
+
+    let (mut web_space, _, _) = SpaceLayout::with_single(Some(TermRef {
+        address: "t-web-1".into(),
+    }));
+    web_space.add_panel(Some(TermRef {
+        address: "t-web-2".into(),
+    }));
+
+    // Run concurrent CAS saves on separate spaces; retry loop merges both cleanly
+    let (res1, res2) = tokio::join!(
+        store1.save_space(Some(&rpc1), "api", &api_space),
+        store2.save_space(Some(&rpc2), "web", &web_space),
+    );
+    res1.expect("api CAS save");
+    res2.expect("web CAS save");
+
+    let (doc, ver) = store1.load(Some(&rpc1)).await.expect("load merged");
+    assert_eq!(ver, 2);
+    assert_eq!(doc.spaces.get("api"), Some(&api_space));
+    assert_eq!(doc.spaces.get("web"), Some(&web_space));
+}

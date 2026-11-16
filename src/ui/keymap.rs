@@ -238,7 +238,9 @@ mod tests {
         assert!(bindings.len() <= 18);
         assert!(bindings.iter().any(|(k, _)| k.contains("Ctrl+B H")));
         assert!(bindings.iter().any(|(k, _)| k.contains("Ctrl+B V")));
-        assert!(bindings.iter().any(|(k, _)| k.contains("[") && k.contains("]")));
+        assert!(bindings
+            .iter()
+            .any(|(k, _)| k.contains("[") && k.contains("]")));
     }
 
     #[test]

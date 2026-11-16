@@ -167,15 +167,15 @@
 Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings`.
 
 **Acceptance criteria:**
-- [ ] Dedicated tests in `tests/ui_snapshots.rs` verify end-to-end `AppAction::Spawn` (`NewPanel`, `IntoPane`, `SplitPane`), panel isolation & switching, multi-panel `ClosePane`, tab-bar `[+H]`/`[+V]`/`[+ New Terminal]` clicks, sidebar terminal click isolation, and `reconcile_startup_layouts` external terminal placement.
-- [ ] Dedicated tests in `tests/layout.rs` verify legacy `SplitTree` JSON migration and multi-panel persistence under CAS conflicts and local fallback.
-- [ ] `cargo test` passes with 0 failures and 0 skipped tests.
-- [ ] `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` exit with code 0.
+- [x] Dedicated tests in `tests/ui_snapshots.rs` verify end-to-end `AppAction::Spawn` (`NewPanel`, `IntoPane`, `SplitPane`), panel isolation & switching, multi-panel `ClosePane`, tab-bar `[+H]`/`[+V]`/`[+ New Terminal]` clicks, sidebar terminal click isolation, and `reconcile_startup_layouts` external terminal placement.
+- [x] Dedicated tests in `tests/layout.rs` verify legacy `SplitTree` JSON migration and multi-panel persistence under CAS conflicts and local fallback.
+- [x] `cargo test` passes with 0 failures and 0 skipped tests.
+- [x] `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` exit with code 0.
 
 **Verification:**
-- [ ] Tests pass: `cargo test`
-- [ ] Formatter check: `cargo fmt --all -- --check`
-- [ ] Linter check: `cargo clippy --all-targets -- -D warnings`
+- [x] Tests pass: `cargo test`
+- [x] Formatter check: `cargo fmt --all -- --check`
+- [x] Linter check: `cargo clippy --all-targets -- -D warnings`
 
 **Dependencies:** Task 5
 
@@ -188,7 +188,7 @@ Run `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings`
 ---
 
 ## Final Checkpoint: Full Regression & Quality Gates
-- [ ] Full test suite passes: `cargo test`
-- [ ] Formatting clean: `cargo fmt --all -- --check`
-- [ ] Clippy clean with `-D warnings`: `cargo clippy --all-targets -- -D warnings`
-- [ ] All 7 acceptance criteria verified
+- [x] Full test suite passes: `cargo test`
+- [x] Formatting clean: `cargo fmt --all -- --check`
+- [x] Clippy clean with `-D warnings`: `cargo clippy --all-targets -- -D warnings`
+- [x] All 7 acceptance criteria verified

@@ -99,9 +99,8 @@ fn find_pane_by_terminal_in(node: &SplitNode, address: &str) -> Option<PaneId> {
             terminal: Some(tr),
         } if tr.address == address => Some(*id),
         SplitNode::Leaf { .. } => None,
-        SplitNode::Split { first, second, .. } => {
-            find_pane_by_terminal_in(first, address).or_else(|| find_pane_by_terminal_in(second, address))
-        }
+        SplitNode::Split { first, second, .. } => find_pane_by_terminal_in(first, address)
+            .or_else(|| find_pane_by_terminal_in(second, address)),
     }
 }
 
@@ -281,9 +280,10 @@ impl SpaceLayout {
     }
 
     pub fn find_pane_by_terminal(&self, address: &str) -> Option<(PanelId, PaneId)> {
-        self.panels
-            .iter()
-            .find_map(|p| p.find_pane_by_terminal(address).map(|pane_id| (p.id, pane_id)))
+        self.panels.iter().find_map(|p| {
+            p.find_pane_by_terminal(address)
+                .map(|pane_id| (p.id, pane_id))
+        })
     }
 
     pub fn has_terminals(&self) -> bool {
@@ -306,7 +306,7 @@ impl SpaceLayout {
     pub fn ensure_valid_active_panel(&mut self) {
         if self
             .active_panel
-            .is_none_or(|id| !self.panels.iter().any(|p| p.id == id))
+            .map_or(true, |id| !self.panels.iter().any(|p| p.id == id))
         {
             self.active_panel = self.panels.first().map(|p| p.id);
         }
