@@ -68,7 +68,7 @@ Task 1: Add alacritty_terminal 0.26 to Cargo.toml & implement AlacrittyScreen + 
 - [x] `cargo check --all-targets`, `cargo test --lib`, and existing integration tests (`cargo test --test term --test ui_snapshots --test live`) pass without warnings.
 
 ### Phase 2: Regression Coverage & Release Gate
-- [ ] **Task 3:** Add comprehensive regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` covering `REP` (`CSI Ps b`), `nvim` `SIGWINCH` redraw (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR `38:2::R:G:B` and `4:3`), bidirectional soft-wrap reflow, Arabic harakat, wide CJK boundary clamping, `Cf`/VS/ZWJ sanitization, scrollback, and mouse/app-cursor modes.
+- [x] **Task 3:** Add comprehensive regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` covering `REP` (`CSI Ps b`), `nvim` `SIGWINCH` redraw (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR `38:2::R:G:B` and `4:3`), bidirectional soft-wrap reflow, Arabic harakat, wide CJK boundary clamping, `Cf`/VS/ZWJ sanitization, scrollback, and mouse/app-cursor modes.
 - [ ] **Task 4:** Run full verification gates (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`) and reinstall `htui` (`cargo install --path . --locked`).
 
 ### Checkpoint 2: Complete

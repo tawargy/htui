@@ -4953,3 +4953,91 @@ async fn sync_backend_side_by_side_divider_drag_emits_sync_and_post_non_ascii_mo
         );
     }
 }
+
+#[test]
+fn side_by_side_nvim_rep_and_colon_sgr_panes_with_sync_backend() {
+    use herdr_tui::ui::backend::SyncCrosstermBackend;
+    use ratatui::{TerminalOptions, Viewport};
+
+    let (mut tree, p1) = SplitTree::with_single(Some(TermRef {
+        address: "t1".into(),
+    }));
+    let _p2 = tree.split(
+        p1,
+        SplitAxis::Horizontal,
+        Some(TermRef {
+            address: "t2".into(),
+        }),
+    );
+
+    // Total width 80x12 -> left pane x=0..40 (inner 38x10), right pane x=40..80 (inner 38x10)
+    let mut s1 = AttachSession::new("t1".into(), 38, 10);
+    s1.state = SessionState::Active;
+    // Simulate nvim alt-screen frame with CSI ? 2026 h/l, colon-SGR, Arabic/wide/VS16, and lualine REP row
+    s1.screen.process(
+        concat!(
+            "\x1b[?1049h\x1b[?2026h",
+            "\x1b[1;1H\x1b[38:2::122:162:247;4:3mnvim\x1b[0m \u{26A0}\u{FE0F} بِ 漢",
+            "\x1b[10;1H1% \x1b[30b20:56",
+            "\x1b[?2026l",
+        )
+        .as_bytes(),
+    );
+
+    let mut s2 = AttachSession::new("t2".into(), 38, 10);
+    s2.state = SessionState::Active;
+    s2.screen.process(b"RIGHT_PANE\r\nOK");
+
+    let mut sessions = HashMap::new();
+    sessions.insert("t1".into(), s1);
+    sessions.insert("t2".into(), s2);
+
+    let area = Rect::new(0, 0, 80, 12);
+    let writer = SharedVecWriter::default();
+    let backend = SyncCrosstermBackend::new(writer.clone());
+    let mut term = RatatuiTerminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(area),
+        },
+    )
+    .expect("create fixed terminal");
+
+    let mut rendered_buf = Buffer::empty(area);
+    term.draw(|f| {
+        render_panes(f.area(), f.buffer_mut(), &tree, Some(p1), &sessions, None);
+        rendered_buf = f.buffer_mut().clone();
+    })
+    .expect("draw side-by-side nvim panes");
+
+    let ansi = writer.take_string();
+    assert_sync_framed(&ansi, "side-by-side nvim REP frame");
+    assert_moveto_follows_non_ascii(&ansi, "│", "side-by-side divider │");
+    assert!(
+        !ansi.contains('\u{FE0F}'),
+        "VS16 must be sanitized before ANSI output"
+    );
+
+    // Colon-SGR truecolor + undercurl on "nvim" at (1, 1)
+    let nvim_cell = rendered_buf.cell((1, 1)).unwrap();
+    assert_eq!(nvim_cell.symbol(), "n");
+    assert_eq!(nvim_cell.fg, Color::Rgb(122, 162, 247));
+    assert!(nvim_cell.modifier.contains(Modifier::UNDERLINED));
+
+    // Bottom inner row (y=10): "1%" at x=1..3, "20:56" right-aligned at x=34..39 before border at x=39
+    assert_eq!(rendered_buf.cell((1, 10)).unwrap().symbol(), "1");
+    assert_eq!(rendered_buf.cell((2, 10)).unwrap().symbol(), "%");
+    assert_eq!(rendered_buf.cell((34, 10)).unwrap().symbol(), "2");
+    assert_eq!(rendered_buf.cell((38, 10)).unwrap().symbol(), "6");
+
+    // Outer divider columns x=39 and x=40 remain intact on all inner rows
+    for y in 1..11 {
+        assert_eq!(rendered_buf.cell((39, y)).unwrap().symbol(), "│");
+        assert_eq!(rendered_buf.cell((40, y)).unwrap().symbol(), "│");
+    }
+
+    let rendered_str = buffer_to_string(&rendered_buf);
+    assert!(rendered_str.contains("RIGHT_PANE"));
+    assert!(rendered_str.contains("1%"));
+    assert!(rendered_str.contains("20:56"));
+}

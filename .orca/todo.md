@@ -69,11 +69,11 @@ Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/
 4. Edge cases & UI integration: Arabic harakat (`"بِ"`, `"لَّ"`, `"شُ"`), wide CJK boundary clamping, `Cf`/soft-hyphen/VS/ZWJ sanitization, `set_scrollback` content + cursor hidden when `scrollback() > 0`, mouse protocols + `APP_CURSOR`/`BRACKETED_PASTE`/`ALT_SCREEN`, and a `tests/ui_snapshots.rs` side-by-side pane test rendering an `nvim`-like `REP` + colon-SGR + `lualine` pane next to a right pane through `SyncCrosstermBackend`.
 
 **Acceptance criteria:**
-- [ ] `tests/term.rs` verifies `CSI Ps b` (`REP`), `nvim` `SIGWINCH` redraw sequences (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR), bidirectional soft-wrap reflow, scrollback, cursor visibility, Arabic harakat, wide CJK clamping, and modes.
-- [ ] `tests/ui_snapshots.rs` verifies side-by-side `nvim`-like pane rendering with `REP` statusline alignment and intact `│` borders via `render_panes` and `SyncCrosstermBackend`.
+- [x] `tests/term.rs` verifies `CSI Ps b` (`REP`), `nvim` `SIGWINCH` redraw sequences (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR), bidirectional soft-wrap reflow, scrollback, cursor visibility, Arabic harakat, wide CJK clamping, and modes.
+- [x] `tests/ui_snapshots.rs` verifies side-by-side `nvim`-like pane rendering with `REP` statusline alignment and intact `│` borders via `render_panes` and `SyncCrosstermBackend`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Tests pass: `cargo test --test term --test ui_snapshots`
 
 **Dependencies:** Task 2
 

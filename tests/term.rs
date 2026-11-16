@@ -1009,3 +1009,149 @@ fn alacritty_screen_sanitization_end_to_end_with_sync_backend() {
     assert!(ansi.contains("لَّ"), "expected 'لَّ' preserved in {ansi:?}");
     assert!(ansi.contains("شُ"), "expected 'شُ' preserved in {ansi:?}");
 }
+
+#[test]
+fn alacritty_screen_rep_lualine_statusline_alignment() {
+    let mut screen = AlacrittyScreen::new(80, 24, 100);
+    // Simulate lualine statusline on bottom row (row 24, 1-based):
+    // " NORMAL  main.rs" (16 cols) + 52 spaces via CSI 51 b + "1%" (2 cols) + 5 spaces via CSI 4 b + "20:56" (5 cols) = 80 cols
+    screen.process(b"\x1b[24;1H NORMAL  main.rs \x1b[51b1% \x1b[4b20:56");
+
+    let row23 = screen.row_text(23);
+    assert_eq!(
+        row23.len(),
+        80,
+        "expected full 80-col statusline: {row23:?}"
+    );
+    assert!(row23.starts_with(" NORMAL  main.rs"));
+    assert!(row23.ends_with("1%     20:56"));
+    assert_eq!(screen.cell(23, 68).unwrap().symbol, "1");
+    assert_eq!(screen.cell(23, 69).unwrap().symbol, "%");
+    assert_eq!(screen.cell(23, 75).unwrap().symbol, "2");
+    assert_eq!(screen.cell(23, 79).unwrap().symbol, "6");
+}
+
+#[test]
+fn alacritty_screen_nvim_sigwinch_redraw_sequences() {
+    use ratatui::style::{Color, Modifier};
+
+    let mut screen = AlacrittyScreen::new(80, 24, 100);
+    // Enter alt screen and paint stale right-edge marker at col 79
+    screen.process(b"\x1b[?1049h\x1b[1;79HSB");
+    assert!(screen.modes().alternate_screen);
+    assert_eq!(screen.cell(0, 78).unwrap().symbol, "S");
+
+    // Resize to 50x16 (SIGWINCH) and deliver synchronized update split across two chunks
+    screen.resize(50, 16);
+    assert_eq!(screen.size(), (50, 16));
+
+    // Chunk 1: Begin Sync Update (CSI ? 2026 h) + clear + HVP + colon-SGR
+    screen.process(b"\x1b[?2026h\x1b[2J\x1b[1;1f\x1b[38:2::192:202:245;4:3mnvim\x1b[0m");
+    // While BSU is active and before ESU arrives, the new frame is buffered
+    assert_ne!(screen.row_text(0), "nvim");
+
+    // Chunk 2: CNL (2E), CPL (1F), HPA (`), CHT (I), CBT (Z), ECH (X), REP (b), and ESU (?2026l)
+    screen.process(
+        b"\x1b[3ECD\x1b[1FEF\x1b[5`12345\x1b[6`\x1b[2X\x1b[5;1H\x1b[I\x1b[I\x1b[Ztab\x1b[16;1H1% \x1b[41b20:56\x1b[?2026l",
+    );
+
+    assert!(screen.row_text(0).starts_with("nvim"));
+    let nvim_cell = screen.cell(0, 0).unwrap();
+    assert_eq!(nvim_cell.fg, Color::Rgb(192, 202, 245));
+    assert!(nvim_cell.modifiers.contains(Modifier::UNDERLINED));
+
+    // CNL 3 from row 0 -> row 3 col 0 ("CD"), CPL 1 -> row 2 col 0 ("EF"), HPA 5 -> col 4 ("1  45")
+    assert!(screen.row_text(2).starts_with("EF"));
+    assert_eq!(screen.cell(2, 4).unwrap().symbol, "1");
+    assert_eq!(screen.cell(2, 5).unwrap().symbol, " ");
+    assert_eq!(screen.cell(2, 6).unwrap().symbol, " ");
+    assert_eq!(screen.cell(2, 7).unwrap().symbol, "4");
+    assert_eq!(screen.row_text(3), "CD");
+
+    // CHT x2 (col 0 -> 8 -> 16), CBT x1 (16 -> 8) -> "tab" at col 8
+    assert_eq!(screen.cell(4, 8).unwrap().symbol, "t");
+    assert_eq!(screen.cell(4, 10).unwrap().symbol, "b");
+
+    // Statusline on row 15: "1%" + 42 spaces (1 + 41 REP) + "20:56" = 49? Wait: 2+1+41+5 = 49 -> cols 44..49
+    let status = screen.row_text(15);
+    assert!(status.starts_with("1%"));
+    assert!(status.ends_with("20:56"));
+    assert_eq!(screen.cell(15, 44).unwrap().symbol, "2");
+
+    // Unterminated CSI ? 2026 h recovers cleanly after the 150ms sync timeout
+    screen.process(b"\x1b[?2026h\x1b[1;1Htimeout-ok");
+    std::thread::sleep(Duration::from_millis(165));
+    screen.process(b"");
+    assert!(screen.row_text(0).starts_with("timeout-ok"));
+
+    // Exit alt screen
+    screen.process(b"\x1b[?1049l");
+    assert!(!screen.modes().alternate_screen);
+}
+
+#[test]
+fn alacritty_screen_bidirectional_soft_wrap_reflow() {
+    let mut screen = AlacrittyScreen::new(40, 10, 100);
+    let long_line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx"; // 60 chars
+    screen.process(long_line.as_bytes());
+    assert_eq!(screen.row_text(0), &long_line[..40]);
+    assert_eq!(screen.row_text(1), &long_line[40..]);
+
+    // Shrink to 20 cols -> wraps across 3 rows (first chunk moves into scrollback)
+    screen.resize(20, 10);
+    assert_eq!(screen.row_text(0), &long_line[20..40]);
+    assert_eq!(screen.row_text(1), &long_line[40..60]);
+    screen.set_scrollback(1);
+    assert_eq!(screen.scrollback(), 1);
+    assert_eq!(screen.row_text(0), &long_line[..20]);
+    screen.set_scrollback(0);
+
+    // Grow back to 80 cols -> pulls wrapped line from scrollback and unwraps onto row 0
+    screen.resize(80, 10);
+    assert_eq!(screen.row_text(0), long_line);
+    assert_eq!(screen.row_text(1), "");
+
+    // Alt screen resizes cleanly without bogus primary reflow
+    screen.process(b"\x1b[?1049h\x1b[1;1HALT_LINE");
+    assert!(screen.modes().alternate_screen);
+    screen.resize(20, 6);
+    assert_eq!(screen.size(), (20, 6));
+    assert!(screen.modes().alternate_screen);
+    assert_eq!(screen.row_text(0), "ALT_LINE");
+}
+
+#[test]
+fn alacritty_screen_scrollback_modes_and_wide_cjk_invariants() {
+    let mut screen = AlacrittyScreen::new(20, 5, 100);
+    for i in 0..15 {
+        screen.process(format!("row-{i:02}\r\n").as_bytes());
+    }
+    assert!(screen.cursor().2);
+    screen.set_scrollback(5);
+    assert_eq!(screen.scrollback(), 5);
+    assert!(
+        !screen.cursor().2,
+        "cursor must be hidden while viewing scrollback"
+    );
+    let top_row = screen.row_text(0);
+    assert!(top_row.starts_with("row-"), "got {top_row:?}");
+    screen.set_scrollback(0);
+    assert_eq!(screen.scrollback(), 0);
+    assert!(screen.cursor().2);
+
+    // APP_CURSOR, BRACKETED_PASTE, ALT_SCREEN
+    screen.process(b"\x1b[?1h\x1b[?2004h\x1b[?1049h");
+    let modes = screen.modes();
+    assert!(modes.app_cursor);
+    assert!(modes.bracketed_paste);
+    assert!(modes.alternate_screen);
+
+    // Wide CJK + Arabic harakat + Cf/VS/ZWJ sanitization
+    screen.process(b"\x1b[1;1H");
+    screen.process("漢بِ\u{200B}\u{FE0F}a\u{00AD}b".as_bytes());
+    assert_eq!(screen.cell(0, 0).unwrap().symbol, "漢");
+    assert!(screen.cell(0, 1).unwrap().wide_continuation);
+    assert_eq!(screen.cell(0, 2).unwrap().symbol, "بِ");
+    assert_eq!(screen.cell(0, 3).unwrap().symbol, "a");
+    assert_eq!(screen.cell(0, 4).unwrap().symbol, "b");
+}
