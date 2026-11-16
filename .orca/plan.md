@@ -57,11 +57,11 @@ Task 1: Sanitize symbols & enforce boundary/continuation invariants in Vt100Scre
 - [x] `cargo test` passes with session debounce/observing/drag-end/split-spawn synchronization tests.
 
 ### Phase 3: End-to-End Regression Verification & Quality Gate
-- [ ] **Task 4:** Add side-by-side `Buffer::diff` + `FakeHcServer` resize regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`, and verify formatting, clippy, and full test suite.
+- [x] **Task 4:** Add side-by-side `Buffer::diff` + `FakeHcServer` resize regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`, and verify formatting, clippy, and full test suite.
 
 ### Checkpoint 3: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |

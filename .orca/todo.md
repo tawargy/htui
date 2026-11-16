@@ -90,14 +90,14 @@
 **Description:** Add automated regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` (using `TestBackend`, `Buffer::diff`, and `FakeHcServer`) covering the full bug report: two side-by-side panes resized via divider drag + `EndDrag`, horizontal split spawn shrinking an existing pane, outer terminal resize, observing-mode pane preservation during resize + `TakeOver`, and wide/zero-width/Arabic characters near the pane divider across successive `Buffer::diff` frames. Run the full verification suite (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`).
 
 **Acceptance criteria:**
-- [ ] `tests/term.rs` verifies `AttachSession` debounce/flush/observing/take-over resize behavior and `Vt100Screen` wide/zero-width/Arabic/resize invariants.
-- [ ] `tests/ui_snapshots.rs` verifies side-by-side panes preserve intact `│` borders, adjacent pane text, and valid `Buffer::diff` updates across divider drag, horizontal split spawn, and outer resize.
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` all pass with zero failures or warnings.
+- [x] `tests/term.rs` verifies `AttachSession` debounce/flush/observing/take-over resize behavior and `Vt100Screen` wide/zero-width/Arabic/resize invariants.
+- [x] `tests/ui_snapshots.rs` verifies side-by-side panes preserve intact `│` borders, adjacent pane text, and valid `Buffer::diff` updates across divider drag, horizontal split spawn, and outer resize.
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` all pass with zero failures or warnings.
 
 **Verification:**
-- [ ] Tests pass: `cargo test`
-- [ ] Formatting passes: `cargo fmt --all -- --check`
-- [ ] Lints pass: `cargo clippy --all-targets -- -D warnings`
+- [x] Tests pass: `cargo test`
+- [x] Formatting passes: `cargo fmt --all -- --check`
+- [x] Lints pass: `cargo clippy --all-targets -- -D warnings`
 
 **Dependencies:** Task 3
 
@@ -110,6 +110,6 @@
 ---
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
-- [ ] Ready for human review / `build-tasks`
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
+- [x] Ready for human review / `build-tasks`

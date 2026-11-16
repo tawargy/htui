@@ -4422,3 +4422,259 @@ async fn spawn_with_cleared_space_from_named_space_switches_to_unassigned_and_pr
     assert_eq!(app.layouts.spaces["web"].terminal_addresses(), web_addrs);
     assert_eq!(app.layouts.spaces[UNASSIGNED_SPACE].panels.len(), 2);
 }
+
+#[tokio::test]
+async fn side_by_side_resize_drag_split_outer_resize_and_takeover_preserve_borders_and_diff() {
+    use std::time::{Duration, Instant};
+
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::{Frame, FramedClient};
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::hc::types::RunParams;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use tempfile::TempDir;
+    use unicode_width::UnicodeWidthStr;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let p1 = app.focused_pane.unwrap();
+
+    let mut term = RatatuiTerminal::new(TestBackend::new(120, 30)).unwrap();
+    let t_start = Instant::now() - Duration::from_millis(200);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t_start))
+        .unwrap();
+
+    // 1. Spawn first terminal into p1 and feed wide CJK + zero-width + Arabic harakat
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_addr = app
+        .current_tree()
+        .find_terminal(p1)
+        .expect("t1 in p1")
+        .address
+        .clone();
+    {
+        let s1 = app.sessions.get_mut(&t1_addr).unwrap();
+        let long_wide = "漢".repeat(60);
+        let payload = format!("{long_wide}\r\n\u{200B}\u{FEFF}بِسْمِ_LEFT_OK");
+        s1.handle_frame(Frame::data(1, payload.into_bytes()));
+    }
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t_start))
+        .unwrap();
+    app.sync_pane_sizes(t_start);
+
+    // 2. Horizontal split spawn creates p2 and immediately shrinks p1 before rerender
+    let mut prev_buf = term.backend().buffer().clone();
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::SplitPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p2 = app.focused_pane.unwrap();
+    assert_ne!(p1, p2);
+    let t2_addr = app
+        .current_tree()
+        .find_terminal(p2)
+        .expect("t2 in p2")
+        .address
+        .clone();
+    assert_eq!(
+        app.sessions.get(&t1_addr).unwrap().screen.size(),
+        app.pane_inner_size(p1)
+    );
+    app.sessions
+        .get_mut(&t2_addr)
+        .unwrap()
+        .handle_frame(Frame::data(2, b"RIGHT_PANE_CLEAN".to_vec()));
+
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), Instant::now()))
+        .unwrap();
+    let curr_buf = term.backend().buffer().clone();
+
+    let assert_divider_and_diff = |prev: &Buffer, curr: &Buffer, divider_x: u16, area: Rect| {
+        for y in (area.y + 1)..area.y.saturating_add(area.height).saturating_sub(1) {
+            let edge_sym = curr.cell((divider_x - 2, y)).unwrap().symbol();
+            assert!(
+                UnicodeWidthStr::width(edge_sym) <= 1,
+                "cell before divider at ({}, {y}) has width > 1: {edge_sym:?}",
+                divider_x - 2
+            );
+            assert_eq!(curr.cell((divider_x - 1, y)).unwrap().symbol(), "│");
+            assert_eq!(curr.cell((divider_x, y)).unwrap().symbol(), "│");
+        }
+        let diff = prev.diff(curr);
+        assert!(
+            diff.iter()
+                .any(|(x, y, c)| *x == divider_x && *y > area.y && c.symbol() == "│"),
+            "Buffer::diff must emit divider border at x={divider_x}"
+        );
+        let text = buffer_to_string(curr);
+        assert!(text.contains("RIGHT_PANE_CLEAN"));
+        assert!(text.contains("بِسْمِ_LEFT_OK"));
+    };
+
+    let divider_split = app.last_geom.dividers[0];
+    assert_divider_and_diff(
+        &prev_buf,
+        &curr_buf,
+        divider_split.line_pos,
+        app.last_panes_area,
+    );
+
+    // 3. Divider drag + EndDrag flushes immediately, moves divider, and preserves Buffer::diff
+    prev_buf = curr_buf;
+    let drag_t = Instant::now();
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: divider_split.line_pos,
+            row: divider_split.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t,
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: divider_split.line_pos.saturating_sub(8),
+            row: divider_split.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(5),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: divider_split.line_pos.saturating_sub(8),
+            row: divider_split.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(10),
+    );
+    assert!(app.dirty);
+    assert_eq!(
+        app.sessions.get(&t1_addr).unwrap().screen.size(),
+        app.pane_inner_size(p1)
+    );
+    assert_eq!(
+        app.sessions.get(&t2_addr).unwrap().screen.size(),
+        app.pane_inner_size(p2)
+    );
+
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), drag_t + Duration::from_millis(10)))
+        .unwrap();
+    let after_drag_buf = term.backend().buffer().clone();
+    let divider_dragged = app.last_geom.dividers[0];
+    assert_ne!(divider_dragged.line_pos, divider_split.line_pos);
+    assert_divider_and_diff(
+        &prev_buf,
+        &after_drag_buf,
+        divider_dragged.line_pos,
+        app.last_panes_area,
+    );
+
+    // 4. Outer terminal resize updates Active panes, marks dirty, and keeps borders intact
+    prev_buf = after_drag_buf;
+    let outer_t = drag_t + Duration::from_millis(100);
+    term.backend_mut().resize(96, 22);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), outer_t))
+        .unwrap();
+    assert!(app.sync_pane_sizes(outer_t));
+    assert!(app.dirty);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), outer_t))
+        .unwrap();
+    let after_outer_buf = term.backend().buffer().clone();
+    let divider_outer = app.last_geom.dividers[0];
+    assert_divider_and_diff(
+        &prev_buf,
+        &after_outer_buf,
+        divider_outer.line_pos,
+        app.last_panes_area,
+    );
+
+    // 5. Observing pane preserves its screen size across outer resize and promotes cleanly on TakeOver
+    let mut api_labels = HashMap::new();
+    api_labels.insert("space".to_string(), "api".to_string());
+    let t_obs = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".into()],
+            labels: api_labels,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    app.model
+        .terminals
+        .insert(t_obs.address.clone(), t_obs.clone());
+    app.current_tree_mut().set_terminal(
+        p2,
+        Some(TermRef {
+            address: t_obs.address.clone(),
+        }),
+    );
+    let mut s_obs = AttachSession::new(t_obs.address.clone(), 90, 28);
+    s_obs.attach_observe(&framed).await.unwrap();
+    // Simulate wide observed PTY content while p2 is narrower
+    s_obs.handle_frame(Frame::data(3, b"RIGHT_PANE_CLEAN".to_vec()));
+    let obs_initial_size = s_obs.screen.size();
+    app.sessions.insert(t_obs.address.clone(), s_obs);
+
+    term.backend_mut().resize(84, 20);
+    let obs_t = outer_t + Duration::from_millis(100);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), obs_t))
+        .unwrap();
+    app.sync_pane_sizes(obs_t);
+    assert_eq!(
+        app.sessions.get(&t_obs.address).unwrap().screen.size(),
+        obs_initial_size,
+        "Observing pane screen size must not be overwritten during layout resize"
+    );
+
+    dispatch_action(
+        AppAction::TakeOver(t_obs.address.clone()),
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let promoted = app.sessions.get(&t_obs.address).unwrap();
+    assert_eq!(promoted.state, SessionState::Active);
+    assert_eq!(promoted.screen.size(), app.pane_inner_size(p2));
+}

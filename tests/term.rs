@@ -796,3 +796,70 @@ async fn app_and_event_loop_sync_end_drag_split_spawn_take_over_and_size_event()
     assert_eq!(s_taken.state, SessionState::Active);
     assert_eq!(s_taken.screen.size(), p2_size);
 }
+
+#[tokio::test]
+async fn observing_frame_resize_vs_size_event_and_control_char_sanitization() {
+    use herdr_tui::config::Config;
+    use herdr_tui::hc::framed::Frame;
+    use herdr_tui::hc::types::EventPayload;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::app::TuiApp;
+    use herdr_tui::ui::event_loop::handle_core_event_with_framed;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = LayoutStore::new(tmp.path().join("layouts.toml"), &[]);
+
+    let term = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("run");
+
+    let mut app = TuiApp::new(Config::default(), None);
+    let mut sess = AttachSession::new(term.address.clone(), 80, 24);
+    sess.attach_observe(&framed).await.expect("observe");
+    assert!(sess.resize_notifications);
+
+    // FrameKind::Resize updates Observing screen when resize_notifications == true
+    sess.handle_frame(Frame::resize(1, 96, 28));
+    assert_eq!(sess.screen.size(), (96, 28));
+
+    // Control characters inside screen bytes never leak into Vt100Screen::cell
+    sess.handle_frame(Frame::data(1, b"ok\x00\x07\x1b[0mend".to_vec()));
+    for col in 0..10 {
+        let cell = sess.screen.cell(0, col).expect("cell");
+        assert!(
+            !cell.symbol.chars().any(char::is_control),
+            "control char leaked at col {col}: {:?}",
+            cell.symbol
+        );
+    }
+    app.sessions.insert(term.address.clone(), sess);
+
+    // Core "size" event is ignored when resize_notifications == true (FrameKind::Resize is authoritative)
+    app.dirty = false;
+    handle_core_event_with_framed(
+        EventPayload {
+            seq: 20,
+            terminal: Some(term.address.clone()),
+            event_type: "size".to_string(),
+            data: serde_json::json!({ "cols": 50, "rows": 15 }),
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    assert_eq!(
+        app.sessions.get(&term.address).unwrap().screen.size(),
+        (96, 28)
+    );
+}
