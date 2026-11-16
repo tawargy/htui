@@ -21,8 +21,9 @@ use crate::hc::framed::FramedClient;
 use crate::hc::rpc::RpcClient;
 use crate::hc::types::{EventPayload, RunParams};
 use crate::layout::presence::PresenceManager;
+use crate::layout::panel::SpaceLayout;
 use crate::layout::store::LayoutStore;
-use crate::layout::tree::{SplitTree, TermRef};
+use crate::layout::tree::TermRef;
 use crate::model::reducer::{apply, ModelInput};
 use crate::model::tree::UNASSIGNED_SPACE;
 use crate::term::session::{AttachSession, SessionState};
@@ -264,23 +265,30 @@ pub async fn reconcile_startup_layouts(
         .collect();
 
     let mut pruned_spaces = Vec::new();
-    for (sp, tree) in &mut app.layouts.spaces {
-        let mut pruned = tree.prune_removed(&present);
-        for pid in tree.pane_ids() {
-            if let Some(term_ref) = tree.find_terminal(pid) {
-                if let Some(term) = app.model.terminals.get(&term_ref.address) {
-                    let term_space = term
-                        .labels
-                        .get("space")
-                        .map(String::as_str)
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(UNASSIGNED_SPACE);
-                    if term_space != sp.as_str() {
-                        tree.set_terminal(pid, None);
-                        pruned += 1;
+    for (sp, space_layout) in &mut app.layouts.spaces {
+        let mut pruned = space_layout.prune_removed(&present);
+        let mut label_pruned = false;
+        for panel in &mut space_layout.panels {
+            for pid in panel.tree.pane_ids() {
+                if let Some(term_ref) = panel.tree.find_terminal(pid) {
+                    if let Some(term) = app.model.terminals.get(&term_ref.address) {
+                        let term_space = term
+                            .labels
+                            .get("space")
+                            .map(String::as_str)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(UNASSIGNED_SPACE);
+                        if term_space != sp.as_str() {
+                            panel.tree.set_terminal(pid, None);
+                            pruned += 1;
+                            label_pruned = true;
+                        }
                     }
                 }
             }
+        }
+        if label_pruned {
+            space_layout.collapse_empty_splits_or_prune();
         }
         if pruned > 0 {
             pruned_spaces.push(sp.clone());
@@ -290,18 +298,19 @@ pub async fn reconcile_startup_layouts(
     if let Some(sp) = initial_space_name {
         if sp != UNASSIGNED_SPACE {
             app.model.declared_spaces.insert(sp.to_string());
-            if let Some(tree) = app.layouts.spaces.get_mut(sp) {
-                tree.collapse_empty_splits();
+            if let Some(space_layout) = app.layouts.spaces.get_mut(sp) {
+                space_layout.collapse_empty_splits_or_prune();
             } else {
-                let (tree, _) = SplitTree::with_single(None);
-                app.layouts.spaces.insert(sp.to_string(), tree);
+                app.layouts
+                    .spaces
+                    .insert(sp.to_string(), SpaceLayout::new());
             }
             app.switch_space(sp.to_string());
         }
     }
 
-    if let Some(tree) = app.layouts.spaces.get_mut(UNASSIGNED_SPACE) {
-        tree.collapse_empty_splits();
+    if let Some(space_layout) = app.layouts.spaces.get_mut(UNASSIGNED_SPACE) {
+        space_layout.collapse_empty_splits_or_prune();
     }
 
     let mut removed_from_store: HashSet<String> = HashSet::new();
@@ -327,7 +336,7 @@ pub async fn reconcile_startup_layouts(
         .layouts
         .spaces
         .get(UNASSIGNED_SPACE)
-        .is_some_and(|t| !t.has_terminals());
+        .is_some_and(|s| !s.has_terminals());
     if unassigned_empty {
         if app.active_space != UNASSIGNED_SPACE {
             app.layouts.spaces.remove(UNASSIGNED_SPACE);
@@ -341,24 +350,30 @@ pub async fn reconcile_startup_layouts(
 
     for sp in pruned_spaces {
         if !removed_from_store.contains(&sp) {
-            if let Some(tree) = app.layouts.spaces.get(&sp) {
-                if tree.has_terminals() {
-                    let _ = store.save_space(rpc, &sp, tree).await;
+            if let Some(space_layout) = app.layouts.spaces.get(&sp) {
+                if space_layout.has_terminals() {
+                    let _ = store.save_space(rpc, &sp, space_layout).await;
                 }
             }
         }
     }
 
     let active = app.active_space.clone();
-    let entry = app.layouts.spaces.entry(active).or_insert_with(|| {
-        let (t, _) = SplitTree::with_single(None);
-        t
-    });
+    let entry = app
+        .layouts
+        .spaces
+        .entry(active)
+        .or_insert_with(SpaceLayout::new);
+    entry.ensure_valid_active_panel();
+    let active_pane_ids = entry
+        .active_panel()
+        .map(|p| p.tree.pane_ids())
+        .unwrap_or_default();
     if app
         .focused_pane
-        .map_or(true, |pid| !entry.pane_ids().contains(&pid))
+        .is_none_or(|pid| !active_pane_ids.contains(&pid))
     {
-        app.focused_pane = entry.pane_ids().into_iter().next();
+        app.focused_pane = active_pane_ids.into_iter().next();
     }
 
     app.refresh_sidebar();
@@ -532,8 +547,8 @@ pub async fn dispatch_action(
                             }
                         }
                         let space_key = app.active_space.clone();
-                        if let Some(tree) = app.layouts.spaces.get(&space_key) {
-                            let _ = store.save_space(Some(client), &space_key, tree).await;
+                        if let Some(space_layout) = app.layouts.spaces.get(&space_key) {
+                            let _ = store.save_space(Some(client), &space_key, space_layout).await;
                         }
                     }
                     Err(e) => {
@@ -599,18 +614,18 @@ pub async fn dispatch_action(
                     let _ = client.terminal_label(&addr, map).await;
                 }
             }
-            if let Some(tree) = app.layouts.spaces.remove(&old_space) {
+            if let Some(space_layout) = app.layouts.spaces.remove(&old_space) {
                 let _ = store.remove_space(rpc, &old_space).await;
-                let _ = store.save_space(rpc, &new_space, &tree).await;
-                app.layouts.spaces.insert(new_space.clone(), tree);
+                let _ = store.save_space(rpc, &new_space, &space_layout).await;
+                app.layouts.spaces.insert(new_space.clone(), space_layout);
             }
             if app.active_space == old_space {
                 app.active_space = new_space;
             }
         }
         AppAction::SaveLayout(space) => {
-            if let Some(tree) = app.layouts.spaces.get(&space) {
-                let _ = store.save_space(rpc, &space, tree).await;
+            if let Some(space_layout) = app.layouts.spaces.get(&space) {
+                let _ = store.save_space(rpc, &space, space_layout).await;
             }
         }
         AppAction::RemoveLayout(space) => {

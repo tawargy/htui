@@ -64,14 +64,14 @@
 **Description:** Update `LayoutDoc.spaces` in `src/layout/store.rs` to `HashMap<String, SpaceLayout>` using an internal `#[serde(untagged)] enum SpaceLayoutWire` (`MultiPanel(SpaceLayout)` | `LegacyTree(SplitTree)`) so legacy single-tree documents deserialize cleanly into 1-panel `SpaceLayout`s while saving persists the multi-panel format. Update `LayoutStore::save_space` and `prune_empty_spaces` for `SpaceLayout`. Adapt `src/ui/app.rs`, `src/ui/event_loop.rs`, `tests/layout.rs`, and existing direct `layouts.spaces` / `SplitTree` references in `tests/ui_snapshots.rs` to use `SpaceLayout`, and add legacy migration + multi-panel persistence tests in `tests/layout.rs`.
 
 **Acceptance criteria:**
-- [ ] `LayoutDoc` deserializes legacy JSON (`{"spaces": {"api": {"root": ..., "next_id": ...}}}`) into a 1-panel `SpaceLayout` preserving all split nodes, ratios, and `TermRef`s, and serializes as multi-panel `SpaceLayout`.
-- [ ] `LayoutStore::save_space`, `load`, and `prune_empty_spaces` work via both `doc.get`/`doc.set` CAS API and local `layout.json` fallback.
-- [ ] `tests/layout.rs` includes dedicated tests for legacy `SplitTree` migration (Doc API + local fallback) and multi-panel round-trip persistence.
-- [ ] Existing `TuiApp`, `event_loop`, and `ui_snapshots` callers compile and pass with `SpaceLayout`.
+- [x] `LayoutDoc` deserializes legacy JSON (`{"spaces": {"api": {"root": ..., "next_id": ...}}}`) into a 1-panel `SpaceLayout` preserving all split nodes, ratios, and `TermRef`s, and serializes as multi-panel `SpaceLayout`.
+- [x] `LayoutStore::save_space`, `load`, and `prune_empty_spaces` work via both `doc.get`/`doc.set` CAS API and local `layout.json` fallback.
+- [x] `tests/layout.rs` includes dedicated tests for legacy `SplitTree` migration (Doc API + local fallback) and multi-panel round-trip persistence.
+- [x] Existing `TuiApp`, `event_loop`, and `ui_snapshots` callers compile and pass with `SpaceLayout`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test layout`
-- [ ] Full suite passes: `cargo test`
+- [x] Tests pass: `cargo test --test layout`
+- [x] Full suite passes: `cargo test`
 
 **Dependencies:** Task 1, Task 2
 
@@ -87,8 +87,8 @@
 ---
 
 ## Checkpoint 2: Compilation & Migration
-- [ ] `cargo test` passes completely across all unit and integration tests
-- [ ] Legacy layout deserialization verified in `tests/layout.rs`
+- [x] `cargo test` passes completely across all unit and integration tests
+- [x] Legacy layout deserialization verified in `tests/layout.rs`
 
 ---
 

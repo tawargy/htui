@@ -93,10 +93,10 @@ src/layout/panel.rs (PanelId, PanelLayout, SpaceLayout)
 - [x] `cargo test --lib` passes cleanly
 
 ### Phase 2: Backward-Compatible Storage & Core `SpaceLayout` Adoption
-- [ ] Task 3: Migrate `LayoutDoc` & `LayoutStore` in `src/layout/store.rs` to `HashMap<String, SpaceLayout>` with legacy `SplitTree` deserialization, update callers/tests to compile, and add migration tests in `tests/layout.rs`
+- [x] Task 3: Migrate `LayoutDoc` & `LayoutStore` in `src/layout/store.rs` to `HashMap<String, SpaceLayout>` with legacy `SplitTree` deserialization, update callers/tests to compile, and add migration tests in `tests/layout.rs`
 
 ### Checkpoint 2: Compilation & Migration
-- [ ] `cargo test` passes across all unit and integration suites
+- [x] `cargo test` passes across all unit and integration suites
 
 ### Phase 3: Panel UI, Isolation, Lifecycle & Reconciliation
 - [ ] Task 4: Update `src/ui/tabs.rs` for isolated panel tabs + `[+H]`/`[+V]`/`[+ New Terminal]`, and implement panel switching, split-isolation, and target-aware spawn/sidebar routing in `src/ui/app.rs`

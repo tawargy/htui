@@ -5,8 +5,9 @@ use std::collections::HashSet;
 
 use fake_hc::FakeHcServer;
 use herdr_tui::hc::rpc::RpcClient;
+use herdr_tui::layout::panel::SpaceLayout;
 use herdr_tui::layout::presence::{PresenceDoc, PresenceLease, PresenceManager};
-use herdr_tui::layout::store::LayoutStore;
+use herdr_tui::layout::store::{LayoutDoc, LayoutStore, LAYOUT_DOC_NAME};
 use herdr_tui::layout::tree::{SplitAxis, SplitTree, TermRef};
 use tempfile::TempDir;
 
@@ -31,16 +32,17 @@ async fn store_and_presence() {
             address: "t2".into(),
         }),
     );
+    let space_layout = SpaceLayout::from_tree(tree);
 
     let ver = store
-        .save_space(Some(&rpc), "api", &tree)
+        .save_space(Some(&rpc), "api", &space_layout)
         .await
         .expect("save api");
     assert_eq!(ver, 1);
 
     let (loaded, lver) = store.load(Some(&rpc)).await.expect("load");
     assert_eq!(lver, 1);
-    assert_eq!(loaded.spaces.get("api"), Some(&tree));
+    assert_eq!(loaded.spaces.get("api"), Some(&space_layout));
 
     // Remove space via Doc API
     let ver_after_rm = store
@@ -56,11 +58,11 @@ async fn store_and_presence() {
         LayoutStore::new(fallback.clone(), &["hello".into(), "terminal.list".into()]);
     assert!(!store_no_doc.uses_doc_api());
     store_no_doc
-        .save_space(None, "web", &tree)
+        .save_space(None, "web", &space_layout)
         .await
         .expect("save local");
     let (local_doc, _) = store_no_doc.load(None).await.expect("load local");
-    assert_eq!(local_doc.spaces.get("web"), Some(&tree));
+    assert_eq!(local_doc.spaces.get("web"), Some(&space_layout));
     store_no_doc
         .remove_space(None, "web")
         .await
@@ -95,14 +97,15 @@ async fn prune_empty_spaces_removes_empty_and_listed_spaces() {
     let fallback = tmp.path().join("layout.json");
     let store = LayoutStore::new(fallback.clone(), &rpc.hello().methods);
 
-    let (empty_single, _) = SplitTree::with_single(None);
-    let (mut empty_multi, e1) = SplitTree::with_single(None);
-    empty_multi.split(e1, SplitAxis::Horizontal, None);
+    let (empty_single, _, _) = SpaceLayout::with_single(None);
+    let (mut empty_multi_tree, e1) = SplitTree::with_single(None);
+    empty_multi_tree.split(e1, SplitAxis::Horizontal, None);
+    let empty_multi = SpaceLayout::from_tree(empty_multi_tree);
 
-    let (occupied, _) = SplitTree::with_single(Some(TermRef {
+    let (occupied, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t1".into(),
     }));
-    let (to_remove, _) = SplitTree::with_single(Some(TermRef {
+    let (to_remove, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t2".into(),
     }));
 
@@ -167,4 +170,93 @@ async fn prune_empty_spaces_removes_empty_and_listed_spaces() {
     assert!(!local_doc.spaces.contains_key("empty-named"));
     assert!(!local_doc.spaces.contains_key("drop-me"));
     assert_eq!(local_doc.spaces.get("keep-me"), Some(&occupied));
+}
+
+#[tokio::test]
+async fn legacy_split_tree_migration_and_multipanel_roundtrip() {
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let tmp = TempDir::new().unwrap();
+    let fallback = tmp.path().join("layout.json");
+    let store = LayoutStore::new(fallback.clone(), &rpc.hello().methods);
+
+    // Construct legacy SplitTree JSON with split nodes, custom ratio, and TermRefs
+    let (mut legacy_tree, p1) = SplitTree::with_single(Some(TermRef {
+        address: "t-old-1".into(),
+    }));
+    let _p2 = legacy_tree
+        .split(
+            p1,
+            SplitAxis::Horizontal,
+            Some(TermRef {
+                address: "t-old-2".into(),
+            }),
+        )
+        .unwrap();
+    legacy_tree.set_ratio_at(p1, 0.35);
+
+    let legacy_json = serde_json::json!({
+        "spaces": {
+            "api": legacy_tree
+        }
+    });
+
+    // 1. Direct LayoutDoc deserialization migrates legacy SplitTree into 1-panel SpaceLayout
+    let parsed: LayoutDoc = serde_json::from_value(legacy_json.clone()).expect("parse legacy");
+    let api_space = parsed.spaces.get("api").expect("api space");
+    assert_eq!(api_space.panels.len(), 1);
+    assert_eq!(api_space.active_panel, Some(1));
+    assert_eq!(api_space.panels[0].tree, legacy_tree);
+    assert_eq!(api_space.panels[0].focused_pane, Some(p1));
+
+    // 2. Doc API migration: store legacy JSON in htui.layout, load via LayoutStore, then add a 2nd panel and save
+    rpc.doc_set(LAYOUT_DOC_NAME, legacy_json.clone(), 0, None)
+        .await
+        .expect("seed legacy doc");
+    let (loaded_doc, ver) = store.load(Some(&rpc)).await.expect("load legacy doc");
+    assert_eq!(ver, 1);
+    let mut migrated_api = loaded_doc.spaces.get("api").expect("api").clone();
+    assert_eq!(migrated_api.panels.len(), 1);
+    assert_eq!(migrated_api.panels[0].tree, legacy_tree);
+
+    let (panel2_id, _) = migrated_api.add_panel(Some(TermRef {
+        address: "t-new-3".into(),
+    }));
+    let new_ver = store
+        .save_space(Some(&rpc), "api", &migrated_api)
+        .await
+        .expect("save multipanel");
+    assert_eq!(new_ver, 2);
+
+    // Reloading from Doc API returns the persisted multi-panel SpaceLayout
+    let (reloaded, _) = store.load(Some(&rpc)).await.expect("reload multipanel");
+    let reloaded_api = reloaded.spaces.get("api").expect("api");
+    assert_eq!(reloaded_api.panels.len(), 2);
+    assert_eq!(reloaded_api.active_panel, Some(panel2_id));
+    assert_eq!(reloaded_api.panels[0].tree, legacy_tree);
+    assert_eq!(
+        reloaded_api.panels[1].terminal_addresses(),
+        vec!["t-new-3".to_string()]
+    );
+
+    // 3. Local layout.json fallback migration & multi-panel persistence
+    let local_legacy_path = tmp.path().join("legacy_local.json");
+    std::fs::write(
+        &local_legacy_path,
+        serde_json::to_string_pretty(&legacy_json).unwrap(),
+    )
+    .unwrap();
+    let local_store = LayoutStore::new(local_legacy_path.clone(), &["hello".into()]);
+    let (local_loaded, _) = local_store.load(None).await.expect("load local legacy");
+    assert_eq!(local_loaded.spaces["api"].panels.len(), 1);
+    assert_eq!(local_loaded.spaces["api"].panels[0].tree, legacy_tree);
+
+    local_store
+        .save_space(None, "api", &migrated_api)
+        .await
+        .expect("save local multipanel");
+    let (local_reloaded, _) = local_store.load(None).await.expect("reload local");
+    assert_eq!(local_reloaded.spaces["api"], migrated_api);
+    let raw_saved = std::fs::read_to_string(&local_legacy_path).unwrap();
+    assert!(raw_saved.contains("\"panels\""));
 }

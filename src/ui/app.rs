@@ -7,6 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::config::Config;
 use crate::hc::types::Terminal;
+use crate::layout::panel::SpaceLayout;
 use crate::layout::store::LayoutDoc;
 use crate::layout::tree::{PaneId, SplitAxis, SplitTree, TermRef};
 use crate::model::reducer::AppModelState;
@@ -91,8 +92,8 @@ impl TuiApp {
         let prefix_timeout = Duration::from_millis(config.ui.prefix_timeout_ms);
         let active_space = initial_space.unwrap_or_else(|| UNASSIGNED_SPACE.to_string());
         let mut layouts = LayoutDoc::default();
-        let (tree, p1) = SplitTree::with_single(None);
-        layouts.spaces.insert(active_space.clone(), tree);
+        let (space_layout, _panel_id, p1) = SpaceLayout::with_single(None);
+        layouts.spaces.insert(active_space.clone(), space_layout);
         let mut model = AppModelState::default();
         if active_space != UNASSIGNED_SPACE {
             model.declared_spaces.insert(active_space.clone());
@@ -128,6 +129,8 @@ impl TuiApp {
         self.layouts
             .spaces
             .get(&self.active_space)
+            .and_then(SpaceLayout::active_panel)
+            .map(|p| &p.tree)
             .unwrap_or_else(|| {
                 static EMPTY: std::sync::OnceLock<SplitTree> = std::sync::OnceLock::new();
                 EMPTY.get_or_init(SplitTree::new)
@@ -136,10 +139,13 @@ impl TuiApp {
 
     pub fn current_tree_mut(&mut self) -> &mut SplitTree {
         let space = self.active_space.clone();
-        self.layouts.spaces.entry(space).or_insert_with(|| {
-            let (t, _) = SplitTree::with_single(None);
-            t
-        })
+        &mut self
+            .layouts
+            .spaces
+            .entry(space)
+            .or_insert_with(SpaceLayout::new)
+            .active_panel_mut_or_default()
+            .tree
     }
 
     pub fn set_toast(&mut self, msg: impl Into<String>, now: Instant) {
@@ -295,12 +301,7 @@ impl TuiApp {
         );
 
         self.last_panes_area = panes_area;
-        let tree = self
-            .layouts
-            .spaces
-            .get(&self.active_space)
-            .cloned()
-            .unwrap_or_default();
+        let tree = self.current_tree().clone();
         self.last_geom = render_panes(
             panes_area,
             buf,
@@ -536,7 +537,12 @@ impl TuiApp {
             }
         }
         let shift_held = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        let tree = self.layouts.spaces.get(&self.active_space);
+        let tree = self
+            .layouts
+            .spaces
+            .get(&self.active_space)
+            .and_then(SpaceLayout::active_panel)
+            .map(|p| &p.tree);
         let sessions = &self.sessions;
         let action = handle_mouse_with_passthrough(
             mouse,
@@ -769,7 +775,7 @@ impl TuiApp {
                     .layouts
                     .spaces
                     .get(&prev)
-                    .is_some_and(|t| !t.has_terminals())
+                    .is_some_and(|s| !s.has_terminals())
                 {
                     self.layouts.spaces.remove(&prev);
                     removed_prev = Some(prev);
@@ -781,11 +787,15 @@ impl TuiApp {
             }
         }
         self.active_space = space.clone();
-        let entry = self.layouts.spaces.entry(space).or_insert_with(|| {
-            let (t, _) = SplitTree::with_single(None);
-            t
-        });
-        self.focused_pane = entry.pane_ids().into_iter().next();
+        let entry = self
+            .layouts
+            .spaces
+            .entry(space)
+            .or_insert_with(SpaceLayout::new);
+        entry.ensure_valid_active_panel();
+        self.focused_pane = entry
+            .active_panel()
+            .and_then(|p| p.focused_pane.or_else(|| p.tree.pane_ids().into_iter().next()));
         self.dirty = true;
         removed_prev
     }
@@ -1041,11 +1051,11 @@ impl TuiApp {
     }
 
     pub fn space_has_open_terminals(&self, space: &str) -> bool {
-        let has_pane_term = self.layouts.spaces.get(space).is_some_and(|tree| {
-            tree.pane_ids()
-                .into_iter()
-                .any(|pid| tree.find_terminal(pid).is_some())
-        });
+        let has_pane_term = self
+            .layouts
+            .spaces
+            .get(space)
+            .is_some_and(SpaceLayout::has_terminals);
         if has_pane_term {
             return true;
         }
@@ -1119,7 +1129,7 @@ impl TuiApp {
             .layouts
             .spaces
             .iter()
-            .filter(|(_, tree)| !tree.has_terminals())
+            .filter(|(_, space)| !space.has_terminals())
             .map(|(sp, _)| sp.clone())
             .collect();
         for sp in &self.model.declared_spaces {
@@ -1127,7 +1137,7 @@ impl TuiApp {
                 .layouts
                 .spaces
                 .get(sp)
-                .is_some_and(SplitTree::has_terminals)
+                .is_some_and(SpaceLayout::has_terminals)
             {
                 removed.insert(sp.clone());
             }
@@ -1146,30 +1156,39 @@ impl TuiApp {
         let mut pruned_by_space: HashMap<String, usize> = HashMap::new();
         let initial_active = self.active_space.clone();
 
-        for (sp, tree) in &mut self.layouts.spaces {
-            let mut pruned = tree.prune_removed(&present);
-            for pid in tree.pane_ids() {
-                if let Some(term_ref) = tree.find_terminal(pid) {
-                    if let Some(term) = self.model.terminals.get(&term_ref.address) {
-                        let term_space = term
-                            .labels
-                            .get("space")
-                            .map(String::as_str)
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or(UNASSIGNED_SPACE);
-                        if term_space != sp.as_str() {
-                            tree.set_terminal(pid, None);
-                            pruned += 1;
+        for (sp, space_layout) in &mut self.layouts.spaces {
+            let mut pruned = space_layout.prune_removed(&present);
+            let mut label_pruned = false;
+            for panel in &mut space_layout.panels {
+                for pid in panel.tree.pane_ids() {
+                    if let Some(term_ref) = panel.tree.find_terminal(pid) {
+                        if let Some(term) = self.model.terminals.get(&term_ref.address) {
+                            let term_space = term
+                                .labels
+                                .get("space")
+                                .map(String::as_str)
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or(UNASSIGNED_SPACE);
+                            if term_space != sp.as_str() {
+                                panel.tree.set_terminal(pid, None);
+                                pruned += 1;
+                                label_pruned = true;
+                            }
                         }
                     }
                 }
             }
-            if !tree.has_terminals()
-                && (pruned > 0 || sp != &initial_active)
-                && tree.collapse_empty_splits()
-                && sp == &initial_active
-            {
-                self.focused_pane = tree.pane_ids().into_iter().next();
+            if label_pruned {
+                space_layout.collapse_empty_splits_or_prune();
+            }
+            if !space_layout.has_terminals() && (pruned > 0 || sp != &initial_active) {
+                space_layout.collapse_empty_splits_or_prune();
+                if sp == &initial_active {
+                    self.focused_pane = space_layout.active_panel().and_then(|p| {
+                        p.focused_pane
+                            .or_else(|| p.tree.pane_ids().into_iter().next())
+                    });
+                }
             }
             if pruned > 0 {
                 pruned_by_space.insert(sp.clone(), pruned);
@@ -1188,7 +1207,7 @@ impl TuiApp {
                     .layouts
                     .spaces
                     .get(UNASSIGNED_SPACE)
-                    .is_some_and(|t| !t.has_terminals());
+                    .is_some_and(|s| !s.has_terminals());
                 if is_empty && (sp != initial_active || pruned > 0) {
                     if sp != initial_active {
                         self.layouts.spaces.remove(UNASSIGNED_SPACE);
@@ -1232,18 +1251,15 @@ impl TuiApp {
             affected.insert(sp.clone());
         }
         let active_space = self.active_space.clone();
-        for (sp, tree) in &mut self.layouts.spaces {
-            let pids = tree.pane_ids();
-            let mut changed = false;
-            for pid in pids {
-                if tree.find_terminal(pid).map(|t| t.address.as_str()) == Some(addr) {
-                    tree.set_terminal(pid, None);
-                    affected.insert(sp.clone());
-                    changed = true;
+        for (sp, space_layout) in &mut self.layouts.spaces {
+            if space_layout.prune_terminal(addr) {
+                affected.insert(sp.clone());
+                if sp == &active_space {
+                    self.focused_pane = space_layout.active_panel().and_then(|p| {
+                        p.focused_pane
+                            .or_else(|| p.tree.pane_ids().into_iter().next())
+                    });
                 }
-            }
-            if changed && tree.collapse_empty_splits() && sp == &active_space {
-                self.focused_pane = tree.pane_ids().into_iter().next();
             }
         }
         let mut emptied: Vec<String> = affected
@@ -1253,13 +1269,13 @@ impl TuiApp {
                     self.layouts
                         .spaces
                         .get(UNASSIGNED_SPACE)
-                        .is_some_and(|t| !t.has_terminals())
+                        .is_some_and(|s| !s.has_terminals())
                 } else {
                     let has_pane_term = self
                         .layouts
                         .spaces
                         .get(sp)
-                        .is_some_and(SplitTree::has_terminals);
+                        .is_some_and(SpaceLayout::has_terminals);
                     let has_other_live = self.model.terminals.values().any(|t| {
                         t.address != addr
                             && t.is_live()

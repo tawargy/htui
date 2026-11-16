@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_tui::config::Config;
 use herdr_tui::hc::types::Terminal;
+use herdr_tui::layout::panel::SpaceLayout;
 use herdr_tui::layout::tree::{SplitAxis, SplitTree, TermRef};
 use herdr_tui::model::tree::{MachineNode, SpaceNode, TerminalEntry};
 use herdr_tui::term::session::{AttachSession, SessionState};
@@ -945,14 +946,14 @@ fn close_pane_named_space_empty_last_pane_kills_unattached_terminals_and_closes_
         AttachSession::new("t-fin-1".into(), 80, 24),
     );
 
-    let (web_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (web_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-web".into(),
     }));
-    let (zebra_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (zebra_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-zebra".into(),
     }));
-    app.layouts.spaces.insert("web".into(), web_tree);
-    app.layouts.spaces.insert("zebra".into(), zebra_tree);
+    app.layouts.spaces.insert("web".into(), web_space);
+    app.layouts.spaces.insert("zebra".into(), zebra_space);
     app.refresh_sidebar();
 
     // "api" currently has an (empty) single pane, plus unattached t-fin-1 and t-live-2
@@ -1109,10 +1110,10 @@ fn close_pane_unassigned_empty_last_pane_kills_unattached_and_switches_to_named_
     app.sessions
         .insert("t-u1".into(), AttachSession::new("t-u1".into(), 80, 24));
 
-    let (api_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (api_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-api".into(),
     }));
-    app.layouts.spaces.insert("api".into(), api_tree);
+    app.layouts.spaces.insert("api".into(), api_space);
     app.refresh_sidebar();
 
     let now = std::time::Instant::now();
@@ -1160,10 +1161,10 @@ fn close_pane_unassigned_empty_last_pane_without_terminals_switches_to_named_spa
     t_api.labels.insert("space".into(), "api".into());
     app.model.terminals.insert("t-api".into(), t_api);
     app.model.declared_spaces.insert("api".into());
-    let (api_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (api_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-api".into(),
     }));
-    app.layouts.spaces.insert("api".into(), api_tree);
+    app.layouts.spaces.insert("api".into(), api_space);
     app.refresh_sidebar();
 
     let now = std::time::Instant::now();
@@ -2128,14 +2129,14 @@ fn close_pane_and_quit_cleanup_empty_spaces_and_unassigned_splits() {
     qapp.current_tree_mut()
         .split(up1, SplitAxis::Horizontal, None);
 
-    let (empty_tree, _) = SplitTree::with_single(None);
-    qapp.layouts.spaces.insert("empty-sp".into(), empty_tree);
+    let (empty_space, _, _) = SpaceLayout::with_single(None);
+    qapp.layouts.spaces.insert("empty-sp".into(), empty_space);
     qapp.model.declared_spaces.insert("empty-sp".into());
 
-    let (occupied_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (occupied_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-live".into(),
     }));
-    qapp.layouts.spaces.insert("keep-sp".into(), occupied_tree);
+    qapp.layouts.spaces.insert("keep-sp".into(), occupied_space);
     qapp.model.declared_spaces.insert("keep-sp".into());
 
     qapp.handle_key(ctrl_b, now);
@@ -2172,7 +2173,9 @@ fn new_space_survives_refresh_while_active_and_cleans_on_switch_and_prune() {
         address: "t1".into(),
     }));
     api_tree.split(api_p1, SplitAxis::Horizontal, None);
-    app.layouts.spaces.insert("api".into(), api_tree);
+    app.layouts
+        .spaces
+        .insert("api".into(), SpaceLayout::from_tree(api_tree));
     app.refresh_sidebar();
 
     // Create "draft" via Ctrl+b c
@@ -2260,13 +2263,14 @@ async fn dispatch_quit_prunes_empty_spaces_and_unassigned_from_store() {
 
     let (mut unassigned_split, up1) = SplitTree::with_single(None);
     unassigned_split.split(up1, SplitAxis::Horizontal, None);
-    let (empty_named, _) = SplitTree::with_single(None);
-    let (occupied, _) = SplitTree::with_single(Some(TermRef {
+    let unassigned_space = SpaceLayout::from_tree(unassigned_split);
+    let (empty_named, _, _) = SpaceLayout::with_single(None);
+    let (occupied, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-keep".into(),
     }));
 
     store
-        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_split)
+        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_space)
         .await
         .unwrap();
     store
@@ -2281,7 +2285,7 @@ async fn dispatch_quit_prunes_empty_spaces_and_unassigned_from_store() {
     let mut app = TuiApp::new(Config::default(), Some("draft".into()));
     app.layouts
         .spaces
-        .insert(UNASSIGNED_SPACE.into(), unassigned_split);
+        .insert(UNASSIGNED_SPACE.into(), unassigned_space);
     app.layouts.spaces.insert("keep".into(), occupied.clone());
     app.model.declared_spaces.insert("keep".into());
 
@@ -2319,7 +2323,8 @@ async fn reconcile_startup_layouts_cleans_stale_and_unassigned_while_preserving_
 
     let (mut unassigned_split, up1) = SplitTree::with_single(None);
     unassigned_split.split(up1, SplitAxis::Horizontal, None);
-    let (stale_tree, _) = SplitTree::with_single(Some(TermRef {
+    let unassigned_space = SpaceLayout::from_tree(unassigned_split);
+    let (stale_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-dead".into(),
     }));
     let (mut active_tree, ap1) = SplitTree::with_single(Some(TermRef {
@@ -2332,17 +2337,18 @@ async fn reconcile_startup_layouts_cleans_stale_and_unassigned_while_preserving_
             address: "t-dead2".into(),
         }),
     );
+    let active_space_layout = SpaceLayout::from_tree(active_tree);
 
     store
-        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_split)
+        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_space)
         .await
         .unwrap();
     store
-        .save_space(Some(&rpc), "stale", &stale_tree)
+        .save_space(Some(&rpc), "stale", &stale_space)
         .await
         .unwrap();
     store
-        .save_space(Some(&rpc), "work", &active_tree)
+        .save_space(Some(&rpc), "work", &active_space_layout)
         .await
         .unwrap();
 
@@ -2388,20 +2394,21 @@ async fn reconcile_startup_layouts_cleans_stale_and_unassigned_while_preserving_
     assert!(!doc.spaces.contains_key(UNASSIGNED_SPACE));
     let saved_work = doc.spaces.get("work").expect("work saved");
     assert!(saved_work.has_terminals());
-    assert_eq!(saved_work.find_terminal(ap1).unwrap().address, "t-live");
-    assert!(saved_work
+    let saved_work_tree = &saved_work.panels[0].tree;
+    assert_eq!(saved_work_tree.find_terminal(ap1).unwrap().address, "t-live");
+    assert!(saved_work_tree
         .pane_ids()
         .into_iter()
-        .all(|pid| pid == ap1 || saved_work.find_terminal(pid).is_none()));
+        .all(|pid| pid == ap1 || saved_work_tree.find_terminal(pid).is_none()));
 
     // Case 2: startup with initial_space_name = None and only UNASSIGNED_SPACE split -> collapses to 1 pane
     let mut app2 = TuiApp::new(Config::default(), None);
     app2.layouts
         .spaces
-        .insert(UNASSIGNED_SPACE.into(), unassigned_split.clone());
+        .insert(UNASSIGNED_SPACE.into(), unassigned_space.clone());
     app2.focused_pane = Some(999);
     store
-        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_split)
+        .save_space(Some(&rpc), UNASSIGNED_SPACE, &unassigned_space)
         .await
         .unwrap();
     reconcile_startup_layouts(&mut app2, Some(&rpc), &store, None).await;
@@ -2455,7 +2462,7 @@ async fn core_labels_and_exit_events_prune_empty_spaces_from_store() {
     app.current_tree_mut()
         .split(p1, SplitAxis::Horizontal, None);
     store
-        .save_space(Some(&rpc), "api", app.current_tree())
+        .save_space(Some(&rpc), "api", &app.layouts.spaces["api"])
         .await
         .unwrap();
     app.refresh_sidebar();
@@ -2485,7 +2492,11 @@ async fn core_labels_and_exit_events_prune_empty_spaces_from_store() {
     app.current_tree_mut()
         .split(up1, SplitAxis::Horizontal, None);
     store
-        .save_space(Some(&rpc), UNASSIGNED_SPACE, app.current_tree())
+        .save_space(
+            Some(&rpc),
+            UNASSIGNED_SPACE,
+            &app.layouts.spaces[UNASSIGNED_SPACE],
+        )
         .await
         .unwrap();
 
@@ -2568,7 +2579,7 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
     );
     app.model.declared_spaces.insert("api".into());
     store
-        .save_space(Some(&rpc), "api", app.current_tree())
+        .save_space(Some(&rpc), "api", &app.layouts.spaces["api"])
         .await
         .unwrap();
 
@@ -2585,21 +2596,22 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
             }),
         )
         .unwrap();
-    app.layouts.spaces.insert("web".into(), web_tree.clone());
+    let web_space = SpaceLayout::from_tree(web_tree);
+    app.layouts.spaces.insert("web".into(), web_space.clone());
     app.model.declared_spaces.insert("web".into());
     store
-        .save_space(Some(&rpc), "web", &web_tree)
+        .save_space(Some(&rpc), "web", &web_space)
         .await
         .unwrap();
 
     // "jobs": single pane t4 (already finished)
-    let (jobs_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (jobs_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t4".into(),
     }));
-    app.layouts.spaces.insert("jobs".into(), jobs_tree.clone());
+    app.layouts.spaces.insert("jobs".into(), jobs_space.clone());
     app.model.declared_spaces.insert("jobs".into());
     store
-        .save_space(Some(&rpc), "jobs", &jobs_tree)
+        .save_space(Some(&rpc), "jobs", &jobs_space)
         .await
         .unwrap();
     app.refresh_sidebar();
@@ -2706,9 +2718,9 @@ async fn close_pane_dispatches_kill_and_remove_against_fake_hc_and_store() {
     assert!(!app.sessions.contains_key("t2"));
     assert_eq!(app.current_tree().pane_ids(), vec![web_p2]);
     let (remote_doc, _) = store.load(Some(&rpc)).await.unwrap();
-    assert_eq!(remote_doc.spaces["web"].pane_ids(), vec![web_p2]);
+    assert_eq!(remote_doc.spaces["web"].panels[0].tree.pane_ids(), vec![web_p2]);
     let local_doc = LayoutStore::load_local(&fallback_path);
-    assert_eq!(local_doc.spaces["web"].pane_ids(), vec![web_p2]);
+    assert_eq!(local_doc.spaces["web"].panels[0].tree.pane_ids(), vec![web_p2]);
 
     // 3. Switch to "jobs" (finished t4), close with Ctrl+b x -> Remove + RemoveLayout("jobs")
     app.switch_space("jobs".into());
@@ -2807,28 +2819,28 @@ async fn close_pane_empty_last_pane_with_unattached_dispatches_against_fake_hc_a
     // "api" has an (empty) single pane while t-api is unattached in model.terminals
     app.model.declared_spaces.insert("api".into());
     store
-        .save_space(Some(&rpc), "api", app.current_tree())
+        .save_space(Some(&rpc), "api", &app.layouts.spaces["api"])
         .await
         .unwrap();
 
     // "web" has attached t-web
-    let (web_tree, _) = SplitTree::with_single(Some(TermRef {
+    let (web_space, _, _) = SpaceLayout::with_single(Some(TermRef {
         address: "t-web".into(),
     }));
-    app.layouts.spaces.insert("web".into(), web_tree.clone());
+    app.layouts.spaces.insert("web".into(), web_space.clone());
     app.model.declared_spaces.insert("web".into());
     store
-        .save_space(Some(&rpc), "web", &web_tree)
+        .save_space(Some(&rpc), "web", &web_space)
         .await
         .unwrap();
 
     // UNASSIGNED_SPACE has an (empty) single pane while t-u1 and t-u2 are unattached
-    let (u_tree, _) = SplitTree::with_single(None);
+    let (u_space, _, _) = SpaceLayout::with_single(None);
     app.layouts
         .spaces
-        .insert(UNASSIGNED_SPACE.into(), u_tree.clone());
+        .insert(UNASSIGNED_SPACE.into(), u_space.clone());
     store
-        .save_space(Some(&rpc), UNASSIGNED_SPACE, &u_tree)
+        .save_space(Some(&rpc), UNASSIGNED_SPACE, &u_space)
         .await
         .unwrap();
     app.refresh_sidebar();
@@ -3116,9 +3128,10 @@ fn new_space_submit_existing_name_preserves_layout_and_terminals() {
 
     assert_eq!(app.active_space, "api");
     assert!(!app.sidebar_focused);
-    assert_eq!(app.layouts.spaces["api"].pane_ids().len(), 2);
+    assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 2);
     assert_eq!(
-        app.layouts.spaces["api"]
+        app.layouts.spaces["api"].panels[0]
+            .tree
             .find_terminal(p1)
             .map(|t| t.address.as_str()),
         Some("t1")

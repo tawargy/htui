@@ -1,20 +1,49 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::hc::error::{HcError, HcErrorKind, HcResult};
 use crate::hc::rpc::RpcClient;
+use crate::layout::panel::SpaceLayout;
 use crate::layout::tree::SplitTree;
 
 pub const LAYOUT_DOC_NAME: &str = "htui.layout";
 const MAX_CAS_RETRIES: usize = 3;
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SpaceLayoutWire {
+    MultiPanel(SpaceLayout),
+    LegacyTree(SplitTree),
+}
+
+impl From<SpaceLayoutWire> for SpaceLayout {
+    fn from(wire: SpaceLayoutWire) -> Self {
+        match wire {
+            SpaceLayoutWire::MultiPanel(mut space) => {
+                space.ensure_valid_active_panel();
+                space
+            }
+            SpaceLayoutWire::LegacyTree(tree) => SpaceLayout::from_tree(tree),
+        }
+    }
+}
+
+fn deserialize_spaces_map<'de, D>(deserializer: D) -> Result<HashMap<String, SpaceLayout>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = HashMap::<String, SpaceLayoutWire>::deserialize(deserializer)?;
+    Ok(raw.into_iter().map(|(k, v)| (k, v.into())).collect())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LayoutDoc {
-    pub spaces: HashMap<String, SplitTree>,
+    #[serde(deserialize_with = "deserialize_spaces_map")]
+    pub spaces: HashMap<String, SpaceLayout>,
 }
 
 pub struct LayoutStore {
@@ -62,10 +91,10 @@ impl LayoutStore {
         &self,
         rpc: Option<&RpcClient>,
         space_key: &str,
-        tree: &SplitTree,
+        layout: &SpaceLayout,
     ) -> HcResult<u64> {
         self.mutate_doc(rpc, |doc| {
-            doc.spaces.insert(space_key.to_string(), tree.clone());
+            doc.spaces.insert(space_key.to_string(), layout.clone());
         })
         .await
     }
@@ -78,7 +107,7 @@ impl LayoutStore {
         .await
     }
 
-    /// Atomically prunes any space in `removed_spaces` and any space whose `SplitTree` has no terminals.
+    /// Atomically prunes any space in `removed_spaces` and any space whose `SpaceLayout` has no terminals.
     pub async fn prune_empty_spaces(
         &self,
         rpc: Option<&RpcClient>,
@@ -86,7 +115,7 @@ impl LayoutStore {
     ) -> HcResult<u64> {
         self.mutate_doc(rpc, |doc| {
             doc.spaces
-                .retain(|sp, tree| !removed_spaces.contains(sp) && tree.has_terminals());
+                .retain(|sp, space| !removed_spaces.contains(sp) && space.has_terminals());
         })
         .await
     }

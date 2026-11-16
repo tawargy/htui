@@ -221,6 +221,24 @@ impl SpaceLayout {
         self.panels.get_mut(idx)
     }
 
+    pub fn active_panel_mut_or_default(&mut self) -> &mut PanelLayout {
+        let idx = self
+            .active_panel
+            .and_then(|id| self.panels.iter().position(|p| p.id == id))
+            .or_else(|| (!self.panels.is_empty()).then_some(0));
+        let idx = match idx {
+            Some(i) => i,
+            None => {
+                let panel_id = self.alloc_panel_id();
+                let (panel, _) = PanelLayout::new(panel_id, None);
+                self.panels.push(panel);
+                0
+            }
+        };
+        self.active_panel = Some(self.panels[idx].id);
+        &mut self.panels[idx]
+    }
+
     pub fn panel(&self, id: PanelId) -> Option<&PanelLayout> {
         self.panels.iter().find(|p| p.id == id)
     }
