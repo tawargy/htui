@@ -1,78 +1,79 @@
-# Task Breakdown: Fix Remaining Side-by-Side Divider Breakage & Cross-Pane Text Bleeding During Drag
+# Task Breakdown: Replace `vt100` with `alacritty_terminal` Behind `ScreenModel`
 
-## Task 1: Harden `Vt100Screen::cell` against `Cf`, `U+00AD`, variation selectors, and ZWJ clusters
+## Task 1: Add `alacritty_terminal` dependency and implement `AlacrittyScreen` in `src/term/screen.rs`
 
-**Description:** Update `src/term/screen.rs` so `Vt100Screen::cell` strips control characters, soft hyphen (`U+00AD`), Unicode `Cf` format characters (e.g. BIDI overrides/isolates `U+202A..=U+202E`, `U+2066..=U+2069`, `U+200B..=U+200F`, `U+FEFF`, etc.), and variation selectors (`U+FE00..=U+FE0F`, `U+E0100..=U+E01EF`) from the raw cell contents *before* extracting the first grapheme via `preserve_first_grapheme`, then falls back to `" "` if the resulting grapheme is empty or `UnicodeWidthStr::width == 0`. Stripping before `preserve_first_grapheme` ensures ZWJ emoji sequences (e.g. `"👨\u{200D}👩"`) collapse to `"👨"` (matching `vt100`'s width) instead of concatenating multiple wide emojis into one cell, and `⚠️` (`U+26A0 U+FE0F`) collapses to `⚠` (width 1 in both `vt100` and `ratatui`), while Arabic harakat combining marks (`Mn`, e.g. `"بِ"`, `"لَّ"`, `"شُ"`) remain preserved. Add focused unit tests in `tests/term.rs`.
+**Description:** Update `Cargo.toml` to add `alacritty_terminal = { version = "0.26", default-features = false }` and bump `rust-version` from `"1.75"` to `"1.85"` (matching `alacritty_terminal 0.26.0`'s MSRV, while temporarily retaining `vt100` until Task 2 migrates callers and tests). In `src/term/screen.rs`, implement `AlacrittyScreen` backed by `alacritty_terminal::term::Term<NoopEventListener>` and `alacritty_terminal::vte::ansi::Processor`, implementing `ScreenModel`:
+1. `NoopEventListener` implementing `alacritty_terminal::event::EventListener` (safely ignoring `Event::PtyWrite`, `Title`, `Bell`, etc. without panicking or writing to stdout).
+2. Private `ScreenDims` implementing `alacritty_terminal::grid::Dimensions`, clamping `Term` columns to `cols.max(2)` (`MIN_COLUMNS`) while tracking `logical_cols = cols.max(1)` and `logical_rows = rows.max(1)` so `size()` matches requested dimensions even at 1 column.
+3. `process(&mut self, bytes: &[u8])` with stale `CSI ? 2026 h` timeout recovery (`parser.sync_timeout().sync_timeout()` -> `parser.stop_sync(&mut self.term)`), `resize(cols, rows)` (`Term::resize` with automatic soft-wrap reflow on primary screen), `cursor()` (`TermMode::SHOW_CURSOR && display_offset == 0`), `modes()` (`APP_CURSOR`, `BRACKETED_PASTE`, `ALT_SCREEN`, mouse mode/encoding), `scrollback()` / `set_scrollback(offset)` (`Scroll::Delta`), `cell(row, col)` (combining `cell.c` + `cell.zerowidth()`, running control/`Cf`/soft-hyphen/VS sanitization before `preserve_first_grapheme`, mapping `WIDE_CHAR_SPACER | LEADING_WIDE_CHAR_SPACER` to `wide_continuation`, mapping `Color` and `Flags`), `row_text`, and `render_to_buffer`.
+Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`, colon-SGR, `cols == 1` wide-char safety, Arabic harakat, `Cf`/VS/ZWJ sanitization, scrollback, cursor visibility, and `Event::PtyWrite` safety.
 
 **Acceptance criteria:**
-- [x] `Vt100Screen::cell` strips `U+00AD`, Unicode `Cf` format characters (`U+202A..=U+202E`, `U+2066..=U+2069`, `U+200B..=U+200F`, `U+FEFF`, etc.), and variation selectors (`U+FE00..=U+FE0F`, `U+E0100..=U+E01EF`) before `preserve_first_grapheme`, normalizing empty or width-0 results to `" "`.
-- [x] Multi-codepoint VS16/ZWJ clusters (`"⚠️"`, `"👨‍👩‍👧"`) do not produce width divergence (`UnicodeWidthStr::width` > `vt100` cell width) or consume adjacent cells in `render_to_buffer`.
-- [x] Existing and new tests in `tests/term.rs` verify BIDI/format/soft-hyphen/VS16/ZWJ sanitization while keeping Arabic harakat (`"بِ"`, `"لَّ"`, `"شُ"`) intact.
+- [ ] `AlacrittyScreen` implements `ScreenModel` in `src/term/screen.rs` with `NoopEventListener` and `cols.max(2)` `Term` clamping + `logical_cols`/`logical_rows` tracking.
+- [ ] `cell(row, col)` respects `display_offset`, combines `c` + `zerowidth()`, sanitizes control/`Cf`/soft-hyphen/VS before `preserve_first_grapheme`, preserves Arabic harakat, and maps `WIDE_CHAR_SPACER | LEADING_WIDE_CHAR_SPACER`, colors, and modifiers accurately.
+- [ ] Unit tests in `src/term/screen.rs` pass (`cargo test --lib term::screen`).
 
 **Verification:**
-- [x] Tests pass: `cargo test --test term`
-- [x] Build succeeds: `cargo check --all-targets`
+- [ ] Tests pass: `cargo test --lib term::screen`
+- [ ] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** None
 
 **Files likely touched:**
+- `Cargo.toml`
 - `src/term/screen.rs`
-- `tests/term.rs`
 
-**Estimated scope:** Small (2 files)
+**Estimated scope:** Medium (2 files)
 
 ---
 
-## Task 2: Implement `SyncCrosstermBackend<W>` and wire it into `run_tui`
+## Task 2: Wire `AlacrittyScreen` into `AttachSession::new`, migrate tests, and remove `vt100`
 
-**Description:** Create `src/ui/backend.rs` defining `SyncCrosstermBackend<W: io::Write>` wrapping `ratatui::backend::CrosstermBackend<W>`, export `pub mod backend;` in `src/ui/mod.rs`, and wire `SyncCrosstermBackend::new(io::stdout())` into `run_tui` / `run_tui_loop` in `src/ui/event_loop.rs`. Implement `ratatui::backend::Backend` for `SyncCrosstermBackend<W>` so that:
-1. `draw` wraps the frame in `crossterm::terminal::BeginSynchronizedUpdate` (`\x1b[?2026h`) and `EndSynchronizedUpdate` (`\x1b[?2026l`).
-2. `draw` queues `MoveTo(x, y)` whenever `prev_non_ascii || !matches!(last_pos, Some(p) if x == p.x + 1 && y == p.y)`, where `prev_non_ascii` is set to `!cell.symbol().is_ascii()` after each emitted cell—forcing explicit cursor repositioning immediately after any non-ASCII glyph while keeping `MoveTo` elision for consecutive ASCII runs.
-3. Style, color, underline-color (`ratatui` default feature), and modifier diffing (including `BOLD`/`DIM` `NormalIntensity` interaction) are handled cleanly via a small helper without duplicating verbose chains, and all remaining `Backend` methods (`hide_cursor`, `show_cursor`, `get_cursor_position`, `set_cursor_position`, `clear`, `clear_region`, `append_lines`, `size`, `window_size`, `flush`) delegate to `self.inner`.
-Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
+**Description:** Update `AttachSession::new` in `src/term/session.rs` to construct `AlacrittyScreen::new(cols, rows, 2000)`. Migrate all `Vt100Screen` usages in `tests/term.rs` to `AlacrittyScreen` (updating the mouse protocol test in `tests/term.rs` for `alacritty_terminal`'s modern `?1000h`/`?1002h`/`?1003h`/`?1005h`/`?1006h` support, noting legacy X10 `?9h` is not emitted by `alacritty_terminal`). Remove `Vt100Screen` and its `vt100` helpers from `src/term/screen.rs`, and remove `vt100 = "0.15"` from `Cargo.toml` (refreshing `Cargo.lock`).
 
 **Acceptance criteria:**
-- [x] `SyncCrosstermBackend<W: io::Write>` implements `ratatui::backend::Backend` and delegates all lifecycle/cursor/clear/size/flush methods to `CrosstermBackend<W>`.
-- [x] `SyncCrosstermBackend::draw` wraps every frame in `\x1b[?2026h` ... `\x1b[?2026l`, emits explicit `MoveTo(x, y)` after every non-ASCII cell (`!cell.symbol().is_ascii()`), and elides `MoveTo` for consecutive ASCII runs.
-- [x] `run_tui` and `run_tui_loop` in `src/ui/event_loop.rs` use `SyncCrosstermBackend`.
-- [x] Unit tests in `src/ui/backend.rs` verify `MoveTo` after non-ASCII, `MoveTo` elision on ASCII, synchronized update sequences, and modifier/color diffing.
+- [ ] `AttachSession::new` constructs `AlacrittyScreen` and no production or test code references `vt100` or `Vt100Screen`.
+- [ ] `vt100` is removed from `Cargo.toml` and `Cargo.lock`.
+- [ ] All existing tests in `--lib`, `tests/term.rs`, `tests/ui_snapshots.rs`, and `tests/live.rs` pass.
 
 **Verification:**
-- [x] Tests pass: `cargo test --lib ui::backend`
-- [x] Build succeeds: `cargo check --all-targets`
+- [ ] Tests pass: `cargo test --lib && cargo test --test term --test ui_snapshots --test live`
+- [ ] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
 **Files likely touched:**
-- `src/ui/backend.rs`
-- `src/ui/mod.rs`
-- `src/ui/event_loop.rs`
+- `Cargo.toml`
+- `Cargo.lock`
+- `src/term/screen.rs`
+- `src/term/session.rs`
+- `tests/term.rs`
 
-**Estimated scope:** Small (3 files)
+**Estimated scope:** Medium (5 files)
 
 ---
 
 ## Checkpoint: After Tasks 1-2
-- [x] `cargo check --all-targets` succeeds without warnings
-- [x] `cargo test --lib` and `cargo test --test term` pass
-- [x] `Vt100Screen::cell` sanitization and `SyncCrosstermBackend` behavior verified independently
+- [ ] `cargo check --all-targets` passes with zero warnings
+- [ ] `cargo test --lib` and `cargo test --test term --test ui_snapshots --test live` pass
+- [ ] `vt100` completely removed from `Cargo.toml` and `Cargo.lock`
 
 ---
 
-## Task 3: Add ANSI byte-stream & side-by-side divider-drag integration tests
+## Task 3: Add `nvim`/`xterm-256color`, reflow, Arabic, scrollback, and mode regression tests
 
-**Description:** Add integration tests in `tests/term.rs` and `tests/ui_snapshots.rs` exercising `ratatui::Terminal` backed by `SyncCrosstermBackend<SharedVecWriter>` (capturing raw ANSI bytes into `Vec<u8>`) alongside `Vt100Screen`, `TuiApp`, sidebar/tabs, and `MouseAction::DragDivider` / `EndDrag`. Verify that:
-- Explicit `MoveTo` ANSI sequences (`\x1b[row;colH`) are emitted immediately after non-ASCII glyphs (`⚠️` sanitized to `⚠`, Nerd Font/PUA e.g. `\u{e0b0}`, `❯`, Arabic harakat, `│`) before the `│` divider and right-pane content on every row during divider dragging.
-- Pure ASCII runs across consecutive cells elide redundant `MoveTo` sequences.
-- Synchronized output sequences (`\x1b[?2026h` and `\x1b[?2026l`) bracket each rendered frame.
-- Format/BIDI/soft-hyphen/VS16 inputs do not corrupt pane dividers or Arabic harakat clusters across drag updates.
+**Description:** Add comprehensive regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` verifying the exact `nvim` / `xterm-256color` failure modes and all `AlacrittyScreen` invariants:
+1. `CSI Ps b` (`REP`) padding: verify `lualine`-style statusline `"1%"` + `REP` spaces + `"20:56"` stays right-aligned at the rightmost columns instead of collapsing next to `1%`.
+2. Realistic `nvim` `SIGWINCH` redraw sequence: `CSI ? 1049 h` (alt screen), `CSI ? 2026 h` / `l` (including split-chunk BSU+ESU delivery), `REP`, `HVP` (`f`), `CNL` (`E`), `CPL` (`F`), `HPA` (`` ` ``), `ECH` (`X`), `CHT` (`I`), `CBT` (`Z`), colon-separated SGR (`38:2::R:G:B`, `4:3`), cursor visibility/position, and full overwrite leaving zero stale cells from prior width.
+3. Bidirectional soft-wrap reflow on `resize(cols, rows)`: write a long unwrapped line on wide primary screen, shrink width so it wraps across multiple rows, then grow width back and verify lines unwrap/restore cleanly (while alt screen resizes cleanly without bogus reflow).
+4. Edge cases & UI integration: Arabic harakat (`"بِ"`, `"لَّ"`, `"شُ"`), wide CJK boundary clamping, `Cf`/soft-hyphen/VS/ZWJ sanitization, `set_scrollback` content + cursor hidden when `scrollback() > 0`, mouse protocols + `APP_CURSOR`/`BRACKETED_PASTE`/`ALT_SCREEN`, and a `tests/ui_snapshots.rs` side-by-side pane test rendering an `nvim`-like `REP` + colon-SGR + `lualine` pane next to a right pane through `SyncCrosstermBackend`.
 
 **Acceptance criteria:**
-- [x] `tests/ui_snapshots.rs` tests `Terminal<SyncCrosstermBackend<_>>` across side-by-side divider drag with Nerd Font/PUA, `⚠️`, `❯`, Arabic, sidebar, and tabs, asserting exact `\x1b[row;colH` emission after non-ASCII cells, ASCII `MoveTo` elision, and `\x1b[?2026h`/`\x1b[?2026l` framing.
-- [x] `tests/term.rs` tests `Vt100Screen` format/BIDI/soft-hyphen/VS16/ZWJ sanitization and Arabic harakat preservation end-to-end with `Buffer` and `SyncCrosstermBackend`.
+- [ ] `tests/term.rs` verifies `CSI Ps b` (`REP`), `nvim` `SIGWINCH` redraw sequences (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR), bidirectional soft-wrap reflow, scrollback, cursor visibility, Arabic harakat, wide CJK clamping, and modes.
+- [ ] `tests/ui_snapshots.rs` verifies side-by-side `nvim`-like pane rendering with `REP` statusline alignment and intact `│` borders via `render_panes` and `SyncCrosstermBackend`.
 
 **Verification:**
-- [x] Tests pass: `cargo test --test term --test ui_snapshots`
+- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
 
 **Dependencies:** Task 2
 
@@ -86,19 +87,19 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 
 ## Task 4: Run full quality gates and reinstall `htui`
 
-**Description:** Run the complete workspace test suite, formatter check, and strict clippy check across all targets, then reinstall the updated `htui` binary locally with `cargo install --path . --locked`.
+**Description:** Run the full workspace test suite, formatter check, and strict clippy check across all targets, then reinstall the updated `htui` binary locally using `cargo install --path . --locked`.
 
 **Acceptance criteria:**
-- [x] `cargo test` passes with zero failures or skipped assertions.
-- [x] `cargo fmt --all -- --check` passes with no formatting diffs.
-- [x] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
-- [x] `cargo install --path . --locked` succeeds.
+- [ ] `cargo test` passes with zero failures or skipped assertions.
+- [ ] `cargo fmt --all -- --check` passes with zero formatting diffs.
+- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [ ] `cargo install --path . --locked` succeeds.
 
 **Verification:**
-- [x] `cargo test`
-- [x] `cargo fmt --all -- --check`
-- [x] `cargo clippy --all-targets -- -D warnings`
-- [x] `cargo install --path . --locked`
+- [ ] `cargo test`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo clippy --all-targets -- -D warnings`
+- [ ] `cargo install --path . --locked`
 
 **Dependencies:** Task 3
 
@@ -110,6 +111,6 @@ Include focused unit tests in `src/ui/backend.rs` using a `Vec<u8>` writer.
 ---
 
 ## Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass
-- [x] Updated `htui` binary installed and ready for manual verification in Ghostty
+- [ ] All acceptance criteria met
+- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [ ] Updated `htui` binary installed and ready for manual verification with `nvim` in GNOME Terminal / Ghostty
