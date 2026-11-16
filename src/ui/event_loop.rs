@@ -204,7 +204,9 @@ async fn run_tui_loop(
                 let now = Instant::now();
                 app.router.tick(now);
                 for sess in app.sessions.values_mut() {
-                    let _ = sess.flush_pending_resize(now);
+                    if let Ok(true) = sess.flush_pending_resize(now) {
+                        app.dirty = true;
+                    }
                 }
             }
             Some(ev_res) = term_events.next() => {
@@ -505,10 +507,29 @@ pub async fn handle_core_event_with_framed(
     let is_exit = ev.event_type == "finished" || ev.event_type == "removed";
     let ev_type = ev.event_type.clone();
     let ev_term = ev.terminal.clone();
+    let ev_size = if ev.event_type == "size" {
+        match (
+            ev.data.get("cols").and_then(|v| v.as_u64()),
+            ev.data.get("rows").and_then(|v| v.as_u64()),
+        ) {
+            (Some(c), Some(r)) if c > 0 && r > 0 => Some((c as u16, r as u16)),
+            _ => None,
+        }
+    } else {
+        None
+    };
     app.model = apply(
         std::mem::take(&mut app.model),
         ModelInput::Event(ev, now_epoch_ms()),
     );
+    if let (Some(addr), Some((cols, rows))) = (&ev_term, ev_size) {
+        if let Some(sess) = app.sessions.get_mut(addr) {
+            if sess.state == SessionState::Observing && !sess.resize_notifications {
+                sess.screen.resize(cols, rows);
+                app.dirty = true;
+            }
+        }
+    }
     if is_exit {
         if let Some(addr) = ev_term {
             app.sessions.remove(&addr);
@@ -553,8 +574,24 @@ pub async fn dispatch_action(
         }
         AppAction::TakeOver(terminal) => {
             if let Some(fc) = framed {
+                let target_size = app
+                    .current_tree()
+                    .pane_ids()
+                    .into_iter()
+                    .find(|pid| {
+                        app.current_tree()
+                            .find_terminal(*pid)
+                            .map(|t| t.address.as_str())
+                            == Some(terminal.as_str())
+                    })
+                    .map(|pid| app.pane_inner_size(pid));
                 if let Some(sess) = app.sessions.get_mut(&terminal) {
-                    if let Err(e) = sess.take_over(fc).await {
+                    let res = if let Some((cols, rows)) = target_size {
+                        sess.take_over_at(fc, cols, rows).await
+                    } else {
+                        sess.take_over(fc).await
+                    };
+                    if let Err(e) = res {
                         app.set_toast(format!("Take over failed: {e}"), now);
                     } else {
                         sess.drain_frames();
@@ -611,6 +648,7 @@ pub async fn dispatch_action(
                         app.place_spawned_terminal(&addr, effective_target);
                         app.sidebar_focused = false;
                         app.refresh_sidebar();
+                        app.sync_pane_sizes(now);
                         if let Some(fc) = framed {
                             let (cols, rows) = app
                                 .focused_pane

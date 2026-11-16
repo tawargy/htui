@@ -51,10 +51,10 @@ Task 1: Sanitize symbols & enforce boundary/continuation invariants in Vt100Scre
 
 ### Phase 2: Session & UI/Event-Loop Resize Synchronization
 - [x] **Task 2:** Fix `AttachSession` resize lifecycle (`request_resize`, `flush_pending_resize`, `flush_pending_resize_now`, `attach_observe`, `take_over_at`).
-- [ ] **Task 3:** Synchronize `TuiApp` & `event_loop` (`EndDrag`, `sync_pane_sizes`, `tick` flush dirty flag, `AppAction::Spawn`, `AppAction::TakeOver`, `"size"` fallback).
+- [x] **Task 3:** Synchronize `TuiApp` & `event_loop` (`EndDrag`, `sync_pane_sizes`, `tick` flush dirty flag, `AppAction::Spawn`, `AppAction::TakeOver`, `"size"` fallback).
 
 ### Checkpoint 2: Session & Event Loop Synchronization
-- [ ] `cargo test` passes with session debounce/observing/drag-end/split-spawn synchronization tests.
+- [x] `cargo test` passes with session debounce/observing/drag-end/split-spawn synchronization tests.
 
 ### Phase 3: End-to-End Regression Verification & Quality Gate
 - [ ] **Task 4:** Add side-by-side `Buffer::diff` + `FakeHcServer` resize regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`, and verify formatting, clippy, and full test suite.

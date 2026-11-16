@@ -831,6 +831,17 @@ impl TuiApp {
                 self.dirty = true;
             }
             MouseAction::EndDrag => {
+                let mut flushed = false;
+                for sess in self.sessions.values_mut() {
+                    if sess.state == SessionState::Active {
+                        if let Ok(true) = sess.flush_pending_resize_now(now) {
+                            flushed = true;
+                        }
+                    }
+                }
+                if flushed {
+                    self.dirty = true;
+                }
                 actions.push(AppAction::SaveLayout(self.active_space.clone()));
             }
             MouseAction::ScrollUp(pid) => {
@@ -1133,19 +1144,34 @@ impl TuiApp {
         (80, 24)
     }
 
-    pub fn sync_pane_sizes(&mut self, now: Instant) {
-        let targets: Vec<(PaneId, u16, u16)> = self
-            .last_geom
-            .panes
-            .iter()
-            .map(|p| {
-                (
-                    p.pane_id,
-                    p.rect.width.saturating_sub(2).max(1),
-                    p.rect.height.saturating_sub(2).max(1),
-                )
-            })
-            .collect();
+    pub fn sync_pane_sizes(&mut self, now: Instant) -> bool {
+        let targets: Vec<(PaneId, u16, u16)> =
+            if self.last_panes_area.width > 0 && self.last_panes_area.height > 0 {
+                self.current_tree()
+                    .compute_rects(self.last_panes_area)
+                    .into_iter()
+                    .map(|(pid, rect)| {
+                        (
+                            pid,
+                            rect.width.saturating_sub(2).max(1),
+                            rect.height.saturating_sub(2).max(1),
+                        )
+                    })
+                    .collect()
+            } else {
+                self.last_geom
+                    .panes
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.pane_id,
+                            p.rect.width.saturating_sub(2).max(1),
+                            p.rect.height.saturating_sub(2).max(1),
+                        )
+                    })
+                    .collect()
+            };
+        let mut resized = false;
         for (pid, cols, rows) in targets {
             if let Some(addr) = self
                 .current_tree()
@@ -1153,12 +1179,18 @@ impl TuiApp {
                 .map(|t| t.address.clone())
             {
                 if let Some(sess) = self.sessions.get_mut(&addr) {
-                    if sess.screen.size() != (cols, rows) {
-                        let _ = sess.request_resize(cols, rows, now);
+                    if sess.state == SessionState::Active && sess.screen.size() != (cols, rows) {
+                        if let Ok(true) = sess.request_resize(cols, rows, now) {
+                            resized = true;
+                        }
                     }
                 }
             }
         }
+        if resized {
+            self.dirty = true;
+        }
+        resized
     }
 
     pub fn ensure_session_stub(&mut self, addr: &str) {

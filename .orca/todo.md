@@ -60,13 +60,13 @@
 **Description:** Update `src/ui/app.rs` and `src/ui/event_loop.rs` so layout changes, divider drags, outer terminal resizes, splits, and take-overs stay synchronized with `AttachSession` and trigger timely redraws. In `src/ui/app.rs`, flush pending resizes immediately on `MouseAction::EndDrag` (via `flush_pending_resize_now`), update `sync_pane_sizes` to skip non-`Active` sessions and set `self.dirty = true` whenever any session's `screen.size()` changes (returning `bool` if any resized), and ensure `DragDivider` / `EndDrag` / `sync_pane_sizes` cooperate cleanly. In `src/ui/event_loop.rs`, set `app.dirty = true` when `tick` flushes a pending resize, call `app.sync_pane_sizes(now)` after `AppAction::Spawn` places a terminal (so a split sibling pane that shrank resizes immediately), update `AppAction::TakeOver` to pass `pane_inner_size` via `take_over_at`, and in `handle_core_event_with_framed` resize `Observing` sessions on `"size"` events when `!sess.resize_notifications`.
 
 **Acceptance criteria:**
-- [ ] `MouseAction::EndDrag` flushes pending resizes on active sessions immediately and marks `app.dirty = true` if any flushed.
-- [ ] `TuiApp::sync_pane_sizes` skips non-`Active` sessions and marks `self.dirty = true` whenever any `Active` session screen is resized; `tick` sets `app.dirty = true` when `flush_pending_resize` returns `Ok(true)`.
-- [ ] `AppAction::Spawn` (including `SplitPane`) syncs sibling pane sizes, `AppAction::TakeOver` uses `pane_inner_size`, and `"size"` events update `Observing` sessions without `resize_notifications`.
+- [x] `MouseAction::EndDrag` flushes pending resizes on active sessions immediately and marks `app.dirty = true` if any flushed.
+- [x] `TuiApp::sync_pane_sizes` skips non-`Active` sessions and marks `self.dirty = true` whenever any `Active` session screen is resized; `tick` sets `app.dirty = true` when `flush_pending_resize` returns `Ok(true)`.
+- [x] `AppAction::Spawn` (including `SplitPane`) syncs sibling pane sizes, `AppAction::TakeOver` uses `pane_inner_size`, and `"size"` events update `Observing` sessions without `resize_notifications`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 2
 
@@ -79,9 +79,9 @@
 ---
 
 ## Checkpoint: After Tasks 2-3
-- [ ] `cargo test` passes across all unit and integration targets
-- [ ] `cargo check --all-targets` succeeds without warnings
-- [ ] Divider drag, `EndDrag`, split spawn, outer resize, and `TakeOver` flows all keep PTY and `Vt100Screen` sizes in sync
+- [x] `cargo test` passes across all unit and integration targets
+- [x] `cargo check --all-targets` succeeds without warnings
+- [x] Divider drag, `EndDrag`, split spawn, outer resize, and `TakeOver` flows all keep PTY and `Vt100Screen` sizes in sync
 
 ---
 

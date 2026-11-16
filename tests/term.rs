@@ -578,3 +578,221 @@ async fn attach_session_resize_lifecycle_observing_debounce_and_take_over_at() {
         .collect();
     assert_eq!(resize_frames, vec![(70, 22), (82, 26)]);
 }
+
+#[tokio::test]
+async fn app_and_event_loop_sync_end_drag_split_spawn_take_over_and_size_event() {
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use fake_hc::FRAME_RESIZE;
+    use herdr_tui::config::Config;
+    use herdr_tui::hc::types::EventPayload;
+    use herdr_tui::layout::panel::PanelId;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::layout::tree::{SplitAxis, TermRef};
+    use herdr_tui::ui::app::{AppAction, TuiApp};
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::{dispatch_action, handle_core_event_with_framed};
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = LayoutStore::new(tmp.path().join("layouts.toml"), &[]);
+
+    let mut api_labels = std::collections::HashMap::new();
+    api_labels.insert("space".to_string(), "api".to_string());
+    let t1 = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".to_string()],
+            labels: api_labels.clone(),
+            ..Default::default()
+        })
+        .await
+        .expect("run t1");
+    let t_obs = rpc
+        .terminal_run(RunParams {
+            argv: vec!["sh".to_string()],
+            labels: api_labels,
+            ..Default::default()
+        })
+        .await
+        .expect("run t_obs");
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let panel_id: PanelId = app.active_panel_id().expect("panel");
+    let p1 = app.focused_pane.expect("p1");
+    app.model.terminals.insert(t1.address.clone(), t1.clone());
+    app.model
+        .terminals
+        .insert(t_obs.address.clone(), t_obs.clone());
+    app.current_tree_mut().set_terminal(
+        p1,
+        Some(TermRef {
+            address: t1.address.clone(),
+        }),
+    );
+
+    let mut s1 = AttachSession::new(t1.address.clone(), 80, 24);
+    s1.attach_active(&framed).await.expect("attach t1");
+    app.sessions.insert(t1.address.clone(), s1);
+
+    // Initial render at 120x30 (backdate t0 by 100ms so subsequent Spawn is not debounced)
+    let t0 = Instant::now() - Duration::from_millis(100);
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf, t0);
+    // render sets dirty = false; sync_pane_sizes should resize t1, return true, and set dirty = true
+    let did_resize: bool = app.sync_pane_sizes(t0);
+    assert!(did_resize);
+    assert!(app.dirty);
+    let p1_full_size = app.pane_inner_size(p1);
+    assert_eq!(
+        app.sessions.get(&t1.address).unwrap().screen.size(),
+        p1_full_size
+    );
+
+    // 1. AppAction::Spawn with SplitPane immediately shrinks sibling pane p1 before rerender
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "sh".to_string(),
+            task: String::new(),
+            space: "api".to_string(),
+            target: SpawnTarget::SplitPane {
+                panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p1_split_size = app.pane_inner_size(p1);
+    assert!(p1_split_size.0 < p1_full_size.0);
+    assert_eq!(
+        app.sessions.get(&t1.address).unwrap().screen.size(),
+        p1_split_size,
+        "sibling pane t1 must be resized immediately on SplitPane Spawn"
+    );
+
+    // 2. DragDivider (debounced) + EndDrag via mouse events flushes immediately and marks dirty
+    app.render(area, &mut buf, t0);
+    let divider = app.last_geom.dividers[0];
+    let drag_t = Instant::now();
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: divider.line_pos,
+            row: divider.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t,
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: divider.line_pos.saturating_sub(12),
+            row: divider.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(2),
+    );
+    assert_eq!(
+        app.sessions.get(&t1.address).unwrap().screen.size(),
+        p1_split_size,
+        "debounced DragDivider must not prematurely resize screen before EndDrag"
+    );
+    app.dirty = false;
+    let end_actions = app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: divider.line_pos.saturating_sub(12),
+            row: divider.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(5),
+    );
+    assert!(end_actions.contains(&AppAction::SaveLayout("api".to_string())));
+    assert!(app.dirty, "EndDrag flush must mark app.dirty = true");
+    let expected_drag_size = app.pane_inner_size(p1);
+    assert_eq!(
+        app.sessions.get(&t1.address).unwrap().screen.size(),
+        expected_drag_size
+    );
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let frames = srv.recorded_frames().await;
+    assert!(frames.iter().any(|f| {
+        f.kind == FRAME_RESIZE
+            && f.payload.len() >= 4
+            && (
+                u16::from_le_bytes([f.payload[0], f.payload[1]]),
+                u16::from_le_bytes([f.payload[2], f.payload[3]]),
+            ) == expected_drag_size
+    }));
+
+    // 3. Observing pane is skipped by sync_pane_sizes, updated by "size" fallback when !resize_notifications,
+    //    and TakeOver attaches at pane_inner_size!
+    let p2 = app.focused_pane.expect("p2");
+    app.current_tree_mut().set_terminal(
+        p2,
+        Some(TermRef {
+            address: t_obs.address.clone(),
+        }),
+    );
+    let mut s_obs = AttachSession::new(t_obs.address.clone(), 40, 10);
+    s_obs.attach_observe(&framed).await.expect("observe t_obs");
+    s_obs.resize_notifications = false;
+    app.sessions.insert(t_obs.address.clone(), s_obs);
+
+    let p2_size = app.pane_inner_size(p2);
+    assert_ne!(
+        app.sessions.get(&t_obs.address).unwrap().screen.size(),
+        p2_size
+    );
+    app.dirty = false;
+    assert!(
+        !app.sync_pane_sizes(drag_t + Duration::from_millis(100)),
+        "sync_pane_sizes must skip Observing sessions"
+    );
+    assert_ne!(
+        app.sessions.get(&t_obs.address).unwrap().screen.size(),
+        p2_size
+    );
+
+    // "size" event fallback updates Observing session when !resize_notifications
+    handle_core_event_with_framed(
+        EventPayload {
+            seq: 10,
+            terminal: Some(t_obs.address.clone()),
+            event_type: "size".to_string(),
+            data: serde_json::json!({ "cols": 55, "rows": 18 }),
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    assert_eq!(
+        app.sessions.get(&t_obs.address).unwrap().screen.size(),
+        (55, 18)
+    );
+    assert!(app.dirty);
+
+    // TakeOver adopts p2's pane_inner_size
+    dispatch_action(
+        AppAction::TakeOver(t_obs.address.clone()),
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let s_taken = app.sessions.get(&t_obs.address).unwrap();
+    assert_eq!(s_taken.state, SessionState::Active);
+    assert_eq!(s_taken.screen.size(), p2_size);
+}
