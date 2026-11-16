@@ -9,13 +9,13 @@
 Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`, colon-SGR, `cols == 1` wide-char safety, Arabic harakat, `Cf`/VS/ZWJ sanitization, scrollback, cursor visibility, and `Event::PtyWrite` safety.
 
 **Acceptance criteria:**
-- [ ] `AlacrittyScreen` implements `ScreenModel` in `src/term/screen.rs` with `NoopEventListener` and `cols.max(2)` `Term` clamping + `logical_cols`/`logical_rows` tracking.
-- [ ] `cell(row, col)` respects `display_offset`, combines `c` + `zerowidth()`, sanitizes control/`Cf`/soft-hyphen/VS before `preserve_first_grapheme`, preserves Arabic harakat, and maps `WIDE_CHAR_SPACER | LEADING_WIDE_CHAR_SPACER`, colors, and modifiers accurately.
-- [ ] Unit tests in `src/term/screen.rs` pass (`cargo test --lib term::screen`).
+- [x] `AlacrittyScreen` implements `ScreenModel` in `src/term/screen.rs` with `NoopEventListener` and `cols.max(2)` `Term` clamping + `logical_cols`/`logical_rows` tracking.
+- [x] `cell(row, col)` respects `display_offset`, combines `c` + `zerowidth()`, sanitizes control/`Cf`/soft-hyphen/VS before `preserve_first_grapheme`, preserves Arabic harakat, and maps `WIDE_CHAR_SPACER | LEADING_WIDE_CHAR_SPACER`, colors, and modifiers accurately.
+- [x] Unit tests in `src/term/screen.rs` pass (`cargo test --lib term::screen`).
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib term::screen`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib term::screen`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** None
 

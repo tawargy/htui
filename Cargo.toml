@@ -2,7 +2,7 @@
 name = "herdr-tui"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 description = "Keyboard-driven terminal multiplexer and client for herdr-core (hc)"
 license = "Apache-2.0"
 
@@ -15,6 +15,7 @@ name = "htui"
 path = "src/main.rs"
 
 [dependencies]
+alacritty_terminal = { version = "0.26", default-features = false }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }

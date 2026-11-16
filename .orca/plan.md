@@ -61,7 +61,7 @@ Task 1: Add alacritty_terminal 0.26 to Cargo.toml & implement AlacrittyScreen + 
 ## Task List
 
 ### Phase 1: `AlacrittyScreen` Implementation & Wiring
-- [ ] **Task 1:** Add `alacritty_terminal = "0.26"` (`default-features = false`, update `rust-version = "1.85"`) in `Cargo.toml` and implement `AlacrittyScreen` + `NoopEventListener` + unit tests in `src/term/screen.rs`.
+- [x] **Task 1:** Add `alacritty_terminal = "0.26"` (`default-features = false`, update `rust-version = "1.85"`) in `Cargo.toml` and implement `AlacrittyScreen` + `NoopEventListener` + unit tests in `src/term/screen.rs`.
 - [ ] **Task 2:** Update `AttachSession::new` (`src/term/session.rs`) to construct `AlacrittyScreen`, migrate `tests/term.rs` from `Vt100Screen` to `AlacrittyScreen`, and remove `Vt100Screen` and `vt100` from `src/term/screen.rs` / `Cargo.toml`.
 
 ### Checkpoint 1: Core Migration
