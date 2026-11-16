@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::config::Config;
 use crate::hc::types::Terminal;
-use crate::layout::panel::SpaceLayout;
+use crate::layout::panel::{PanelId, SpaceLayout};
 use crate::layout::store::LayoutDoc;
 use crate::layout::tree::{PaneId, SplitAxis, SplitTree, TermRef};
 use crate::model::reducer::AppModelState;
@@ -18,7 +18,7 @@ use crate::term::screen::MouseProtocolMode;
 use crate::term::session::{AttachSession, InputDisposition, SessionState};
 use crate::ui::dialogs::{
     ActiveDialog, ConfirmAction, ConfirmDialog, DialogOutcome, HelpDialog, NewSpaceDialog,
-    RenameSpaceDialog, SpawnDialog,
+    RenameSpaceDialog, SpawnDialog, SpawnTarget,
 };
 use crate::ui::keymap::{Command, PrefixRouter, RouteResult};
 use crate::ui::mouse::{handle_mouse_with_passthrough, MouseAction, MouseDragState};
@@ -146,6 +146,202 @@ impl TuiApp {
             .or_insert_with(SpaceLayout::new)
             .active_panel_mut_or_default()
             .tree
+    }
+
+    pub fn active_panel_id(&self) -> Option<PanelId> {
+        self.layouts
+            .spaces
+            .get(&self.active_space)
+            .and_then(|s| s.active_panel().map(|p| p.id))
+    }
+
+    fn set_focused_pane(&mut self, pid: Option<PaneId>) {
+        self.focused_pane = pid;
+        if let Some(space) = self.layouts.spaces.get_mut(&self.active_space) {
+            if let Some(panel) = space.active_panel_mut() {
+                panel.focused_pane = pid;
+            }
+        }
+    }
+
+    pub fn attach_unattached_in_active_panel(&self, actions: &mut Vec<AppAction>) {
+        let tree = self.current_tree();
+        for pid in tree.pane_ids() {
+            if let Some(tr) = tree.find_terminal(pid) {
+                let is_attached = self.sessions.get(&tr.address).is_some_and(|s| {
+                    s.state == SessionState::Active || s.state == SessionState::Observing
+                });
+                if !is_attached {
+                    actions.push(AppAction::AttachTerminal {
+                        pane_id: pid,
+                        terminal: tr.address.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    pub fn switch_panel(&mut self, panel_id: PanelId) -> Vec<AppAction> {
+        let mut actions = Vec::new();
+        let cur_focus = self.focused_pane;
+        let changed = {
+            let Some(space) = self.layouts.spaces.get_mut(&self.active_space) else {
+                return actions;
+            };
+            let prev_id = space.active_panel().map(|p| p.id);
+            if let Some(prev_panel) = space.active_panel_mut() {
+                if let Some(fp) = cur_focus {
+                    if prev_panel.tree.pane_ids().contains(&fp) {
+                        prev_panel.focused_pane = Some(fp);
+                    }
+                }
+                prev_panel.ensure_valid_focus();
+            }
+            if !space.set_active_panel(panel_id) {
+                return actions;
+            }
+            if let Some(next_panel) = space.active_panel_mut() {
+                next_panel.ensure_valid_focus();
+                self.focused_pane = next_panel.focused_pane;
+            }
+            prev_id != Some(panel_id)
+        };
+        if changed {
+            self.selection = None;
+        }
+        self.sidebar_focused = false;
+        self.attach_unattached_in_active_panel(&mut actions);
+        self.dirty = true;
+        actions
+    }
+
+    pub fn next_panel(&mut self) -> Vec<AppAction> {
+        let Some(next_id) = self
+            .layouts
+            .spaces
+            .get(&self.active_space)
+            .and_then(SpaceLayout::next_panel_id)
+        else {
+            return Vec::new();
+        };
+        self.switch_panel(next_id)
+    }
+
+    pub fn prev_panel(&mut self) -> Vec<AppAction> {
+        let Some(prev_id) = self
+            .layouts
+            .spaces
+            .get(&self.active_space)
+            .and_then(SpaceLayout::prev_panel_id)
+        else {
+            return Vec::new();
+        };
+        self.switch_panel(prev_id)
+    }
+
+    fn open_spawn_for_target(&mut self, target: SpawnTarget) {
+        let sp = self.active_space.clone();
+        let tpls = self.templates.clone();
+        self.dialog = Some(ActiveDialog::Spawn(SpawnDialog::with_target(
+            sp, tpls, target,
+        )));
+    }
+
+    fn open_split_spawn_dialog(&mut self, axis: SplitAxis) {
+        let space_name = self.active_space.clone();
+        let entry = self
+            .layouts
+            .spaces
+            .entry(space_name)
+            .or_insert_with(SpaceLayout::new);
+        let panel = entry.active_panel_mut_or_default();
+        panel.ensure_valid_focus();
+        let panel_id = panel.id;
+        let pane_id = self
+            .focused_pane
+            .filter(|pid| panel.tree.pane_ids().contains(pid))
+            .or(panel.focused_pane);
+        if let Some(pane_id) = pane_id {
+            self.set_focused_pane(Some(pane_id));
+            self.open_spawn_for_target(SpawnTarget::SplitPane {
+                panel_id,
+                pane_id,
+                axis,
+            });
+        } else {
+            self.open_spawn_for_target(SpawnTarget::NewPanel);
+        }
+    }
+
+    fn open_terminal_in_isolated_panel(&mut self, address: String, actions: &mut Vec<AppAction>) {
+        let space_name = self.active_space.clone();
+        let existing_panel = self
+            .layouts
+            .spaces
+            .get(&space_name)
+            .and_then(|s| s.find_pane_by_terminal(&address));
+        if let Some((panel_id, pane_id)) = existing_panel {
+            actions.extend(self.switch_panel(panel_id));
+            self.set_focused_pane(Some(pane_id));
+            return;
+        }
+        let space_layout = self
+            .layouts
+            .spaces
+            .entry(space_name.clone())
+            .or_insert_with(SpaceLayout::new);
+        let pane_id = if space_layout.is_single_empty_placeholder() {
+            let panel = space_layout.active_panel_mut_or_default();
+            if let Some(pid) = panel
+                .focused_pane
+                .or_else(|| panel.tree.pane_ids().into_iter().next())
+            {
+                panel.tree.set_terminal(
+                    pid,
+                    Some(TermRef {
+                        address: address.clone(),
+                    }),
+                );
+                panel.focused_pane = Some(pid);
+                self.focused_pane = Some(pid);
+                pid
+            } else {
+                let (_panel_id, pid) = space_layout.add_panel(Some(TermRef {
+                    address: address.clone(),
+                }));
+                self.focused_pane = Some(pid);
+                pid
+            }
+        } else {
+            let (_panel_id, pid) = space_layout.add_panel(Some(TermRef {
+                address: address.clone(),
+            }));
+            self.focused_pane = Some(pid);
+            pid
+        };
+        self.selection = None;
+        self.sidebar_focused = false;
+        actions.push(AppAction::AttachTerminal {
+            pane_id,
+            terminal: address,
+        });
+        actions.push(AppAction::SaveLayout(space_name));
+    }
+
+    fn open_sidebar_terminal(
+        &mut self,
+        address: String,
+        space: String,
+        actions: &mut Vec<AppAction>,
+    ) {
+        if self.active_space != space {
+            if let Some(removed) = self.switch_space(space) {
+                actions.push(AppAction::RemoveLayout(removed));
+            }
+        }
+        self.open_terminal_in_isolated_panel(address, actions);
+        self.refresh_sidebar();
+        self.sidebar_focused = false;
     }
 
     pub fn set_toast(&mut self, msg: impl Into<String>, now: Instant) {
@@ -291,12 +487,12 @@ impl TuiApp {
         let tab_area = right_chunks[0];
         let panes_area = right_chunks[1];
 
-        let focused_addr = self.focused_terminal_addr();
+        let space_layout = self.layouts.spaces.get(&self.active_space);
         self.last_tabs_geom = render_tab_bar(
             tab_area,
             buf,
+            space_layout,
             &self.active_space,
-            focused_addr.as_deref(),
             &self.model.terminals,
         );
 
@@ -398,26 +594,7 @@ impl TuiApp {
                                         self.select_sidebar_space(&name);
                                     }
                                     SidebarItem::Terminal { address, space, .. } => {
-                                        if let Some(removed) = self.switch_space(space) {
-                                            actions.push(AppAction::RemoveLayout(removed));
-                                        }
-                                        self.refresh_sidebar();
-                                        self.sidebar_focused = false;
-                                        if let Some(pid) = self.focused_pane {
-                                            self.current_tree_mut().set_terminal(
-                                                pid,
-                                                Some(TermRef {
-                                                    address: address.clone(),
-                                                }),
-                                            );
-                                            actions.push(AppAction::AttachTerminal {
-                                                pane_id: pid,
-                                                terminal: address,
-                                            });
-                                            actions.push(AppAction::SaveLayout(
-                                                self.active_space.clone(),
-                                            ));
-                                        }
+                                        self.open_sidebar_terminal(address, space, &mut actions);
                                     }
                                     SidebarItem::Machine { .. } => {
                                         self.sidebar.toggle_selected();
@@ -486,8 +663,11 @@ impl TuiApp {
         {
             let hit = self.last_tabs_geom.iter().find(|h| {
                 let r = match h {
-                    TabHitbox::Terminal { rect, .. } => rect,
-                    TabHitbox::NewTerminal(rect) => rect,
+                    TabHitbox::Panel { rect, .. }
+                    | TabHitbox::UnattachedTerminal { rect, .. }
+                    | TabHitbox::SplitHorizontal(rect)
+                    | TabHitbox::SplitVertical(rect)
+                    | TabHitbox::NewTerminal(rect) => rect,
                 };
                 mouse.column >= r.x
                     && mouse.column < r.x + r.width
@@ -498,38 +678,19 @@ impl TuiApp {
                 self.sidebar_focused = false;
                 match hit {
                     TabHitbox::NewTerminal(_) => {
-                        self.dialog = Some(ActiveDialog::Spawn(SpawnDialog::new(
-                            self.active_space.clone(),
-                            self.templates.clone(),
-                        )));
+                        self.open_spawn_for_target(SpawnTarget::NewPanel);
                     }
-                    TabHitbox::Terminal { address, .. } => {
-                        let existing_pid =
-                            self.current_tree().pane_ids().into_iter().find(|&pid| {
-                                self.current_tree()
-                                    .find_terminal(pid)
-                                    .map(|t| t.address.as_str())
-                                    == Some(address.as_str())
-                            });
-                        if let Some(pid) = existing_pid {
-                            self.focused_pane = Some(pid);
-                        } else if let Some(pid) = self
-                            .focused_pane
-                            .or_else(|| self.current_tree().pane_ids().into_iter().next())
-                        {
-                            self.focused_pane = Some(pid);
-                            self.current_tree_mut().set_terminal(
-                                pid,
-                                Some(TermRef {
-                                    address: address.clone(),
-                                }),
-                            );
-                            actions.push(AppAction::AttachTerminal {
-                                pane_id: pid,
-                                terminal: address,
-                            });
-                            actions.push(AppAction::SaveLayout(self.active_space.clone()));
-                        }
+                    TabHitbox::SplitHorizontal(_) => {
+                        self.open_split_spawn_dialog(SplitAxis::Horizontal);
+                    }
+                    TabHitbox::SplitVertical(_) => {
+                        self.open_split_spawn_dialog(SplitAxis::Vertical);
+                    }
+                    TabHitbox::Panel { panel_id, .. } => {
+                        actions.extend(self.switch_panel(panel_id));
+                    }
+                    TabHitbox::UnattachedTerminal { address, .. } => {
+                        self.open_terminal_in_isolated_panel(address, &mut actions);
                     }
                 }
                 self.dirty = true;
@@ -576,23 +737,7 @@ impl TuiApp {
                     self.sidebar_focused = true;
                     match self.sidebar.selected_item().cloned() {
                         Some(SidebarItem::Terminal { address, space, .. }) => {
-                            if let Some(removed) = self.switch_space(space) {
-                                actions.push(AppAction::RemoveLayout(removed));
-                            }
-                            self.refresh_sidebar();
-                            self.sidebar_focused = false;
-                            if let Some(pid) = self.focused_pane {
-                                self.current_tree_mut().set_terminal(
-                                    pid,
-                                    Some(TermRef {
-                                        address: address.clone(),
-                                    }),
-                                );
-                                actions.push(AppAction::AttachTerminal {
-                                    pane_id: pid,
-                                    terminal: address,
-                                });
-                            }
+                            self.open_sidebar_terminal(address, space, &mut actions);
                         }
                         Some(SidebarItem::Space { name, .. }) => {
                             if let Some(removed) = self.switch_space(name.clone()) {
@@ -610,13 +755,13 @@ impl TuiApp {
                 }
             }
             MouseAction::FocusPane(pid) => {
-                self.focused_pane = Some(pid);
+                self.set_focused_pane(Some(pid));
                 self.sidebar_focused = false;
                 self.selection = None;
                 self.dirty = true;
             }
             MouseAction::StartSelect { pane_id, start } => {
-                self.focused_pane = Some(pane_id);
+                self.set_focused_pane(Some(pane_id));
                 self.sidebar_focused = false;
                 self.selection = Some(TextSelection {
                     pane_id,
@@ -655,7 +800,7 @@ impl TuiApp {
                 self.dirty = true;
             }
             MouseAction::TakeOverPane(pid) => {
-                self.focused_pane = Some(pid);
+                self.set_focused_pane(Some(pid));
                 self.sidebar_focused = false;
                 if let Some(addr) = self
                     .current_tree()
@@ -667,11 +812,20 @@ impl TuiApp {
                 self.dirty = true;
             }
             MouseAction::SpawnInPane(pid) => {
-                self.focused_pane = Some(pid);
+                self.set_focused_pane(Some(pid));
                 self.sidebar_focused = false;
-                let sp = self.active_space.clone();
-                let tpls = self.templates.clone();
-                self.dialog = Some(ActiveDialog::Spawn(SpawnDialog::new(sp, tpls)));
+                let space_name = self.active_space.clone();
+                let panel_id = self
+                    .layouts
+                    .spaces
+                    .entry(space_name)
+                    .or_insert_with(SpaceLayout::new)
+                    .active_panel_mut_or_default()
+                    .id;
+                self.open_spawn_for_target(SpawnTarget::IntoPane {
+                    panel_id,
+                    pane_id: pid,
+                });
                 self.dirty = true;
             }
             MouseAction::DragDivider {
@@ -738,7 +892,7 @@ impl TuiApp {
                 rel_row,
             } => {
                 if matches!(mouse.kind, MouseEventKind::Down(_)) {
-                    self.focused_pane = Some(pane_id);
+                    self.set_focused_pane(Some(pane_id));
                     self.sidebar_focused = false;
                     self.selection = None;
                     self.dirty = true;
@@ -810,7 +964,7 @@ impl TuiApp {
                 };
                 if let Some(pid) = self.focused_pane {
                     if let Some(new_id) = self.current_tree_mut().split(pid, axis, None) {
-                        self.focused_pane = Some(new_id);
+                        self.set_focused_pane(Some(new_id));
                         actions.push(AppAction::SaveLayout(self.active_space.clone()));
                     }
                 }
@@ -870,7 +1024,7 @@ impl TuiApp {
                         self.current_tree()
                             .focus_dir(self.last_panes_area, pid, dir)
                     {
-                        self.focused_pane = Some(next);
+                        self.set_focused_pane(Some(next));
                         self.sidebar_focused = false;
                     }
                 }
@@ -887,9 +1041,15 @@ impl TuiApp {
                 }
             }
             Command::OpenSpawnDialog => {
-                let sp = self.active_space.clone();
-                let tpls = self.templates.clone();
-                self.dialog = Some(ActiveDialog::Spawn(SpawnDialog::new(sp, tpls)));
+                let target = match (self.active_panel_id(), self.focused_pane) {
+                    (Some(panel_id), Some(pane_id))
+                        if self.current_tree().find_terminal(pane_id).is_none() =>
+                    {
+                        SpawnTarget::IntoPane { panel_id, pane_id }
+                    }
+                    _ => SpawnTarget::NewPanel,
+                };
+                self.open_spawn_for_target(target);
             }
             Command::OpenNewSpace => {
                 self.dialog = Some(ActiveDialog::NewSpace(NewSpaceDialog::default()));
@@ -944,10 +1104,18 @@ impl TuiApp {
                 self.should_quit = true;
                 actions.push(AppAction::Quit);
             }
-            Command::SplitSpawnHorizontal
-            | Command::SplitSpawnVertical
-            | Command::PrevPanel
-            | Command::NextPanel => {}
+            Command::SplitSpawnHorizontal => {
+                self.open_split_spawn_dialog(SplitAxis::Horizontal);
+            }
+            Command::SplitSpawnVertical => {
+                self.open_split_spawn_dialog(SplitAxis::Vertical);
+            }
+            Command::PrevPanel => {
+                actions.extend(self.prev_panel());
+            }
+            Command::NextPanel => {
+                actions.extend(self.next_panel());
+            }
         }
     }
 

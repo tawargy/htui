@@ -99,7 +99,7 @@ src/layout/panel.rs (PanelId, PanelLayout, SpaceLayout)
 - [x] `cargo test` passes across all unit and integration suites
 
 ### Phase 3: Panel UI, Isolation, Lifecycle & Reconciliation
-- [ ] Task 4: Update `src/ui/tabs.rs` for isolated panel tabs + `[+H]`/`[+V]`/`[+ New Terminal]`, and implement panel switching, split-isolation, and target-aware spawn/sidebar routing in `src/ui/app.rs`
+- [x] Task 4: Update `src/ui/tabs.rs` for isolated panel tabs + `[+H]`/`[+V]`/`[+ New Terminal]`, and implement panel switching, split-isolation, and target-aware spawn/sidebar routing in `src/ui/app.rs`
 - [ ] Task 5: Implement multi-panel `ClosePane`, per-panel pruning/cleanup, `AppAction::Spawn` target handling, and deterministic external terminal placement in `src/ui/app.rs` and `src/ui/event_loop.rs`
 
 ### Checkpoint 3: Feature Complete

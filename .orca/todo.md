@@ -103,15 +103,15 @@
 - Clicking or pressing Enter on a terminal in the sidebar (`SidebarItem::Terminal`) focuses its existing panel or creates a new individual panel rather than overwriting an occupied pane.
 
 **Acceptance criteria:**
-- [ ] `render_tab_bar` renders isolated panel pills (including multi-pane count indicator ` (+N)`), unattached terminal pills, `[+H]`, `[+V]`, and `[+ New Terminal]` with `Theme::tab_new_terminal()` styling and `Color::Reset` spacing.
-- [ ] Clicking a panel tab or pressing `Ctrl+B [` / `]` switches `active_panel`, updates `focused_pane` to that panel's focused pane, and preserves other panels' layouts.
-- [ ] Opening a spawn dialog from `[+ New Terminal]` or an occupied pane sets `SpawnTarget::NewPanel`; from an empty split pane sets `IntoPane`; from `Ctrl+B H/V` or `[+H]`/`[+V]` sets `SplitPane`.
-- [ ] Sidebar terminal selection never overwrites an occupied pane; it focuses the terminal's panel or opens a new isolated panel.
+- [x] `render_tab_bar` renders isolated panel pills (including multi-pane count indicator ` (+N)`), unattached terminal pills, `[+H]`, `[+V]`, and `[+ New Terminal]` with `Theme::tab_new_terminal()` styling and `Color::Reset` spacing.
+- [x] Clicking a panel tab or pressing `Ctrl+B [` / `]` switches `active_panel`, updates `focused_pane` to that panel's focused pane, and preserves other panels' layouts.
+- [x] Opening a spawn dialog from `[+ New Terminal]` or an occupied pane sets `SpawnTarget::NewPanel`; from an empty split pane sets `IntoPane`; from `Ctrl+B H/V` or `[+H]`/`[+V]` sets `SplitPane`.
+- [x] Sidebar terminal selection never overwrites an occupied pane; it focuses the terminal's panel or opens a new isolated panel.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test ui_snapshots tab_bar`
-- [ ] Tests pass: `cargo test --test ui_snapshots sidebar`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --test ui_snapshots tab_bar`
+- [x] Tests pass: `cargo test --test ui_snapshots sidebar`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 3
 

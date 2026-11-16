@@ -1396,6 +1396,8 @@ fn tab_bar_render_click_and_cursor_alignment() {
     let rendered = buffer_to_string(&buf);
     assert!(rendered.contains("zsh"));
     assert!(rendered.contains("bash"));
+    assert!(rendered.contains("[+H]"));
+    assert!(rendered.contains("[+V]"));
     assert!(rendered.contains("[+ New Terminal]"));
 
     // Cursor alignment below the 1-row tab bar
@@ -1406,12 +1408,12 @@ fn tab_bar_render_click_and_cursor_alignment() {
         Some((hitbox.rect.x + 1 + 2, hitbox.rect.y + 1))
     );
 
-    // 2. Clicking t2 tab switches focused pane to t2 and emits AttachTerminal
+    // 2. Clicking unattached t2 tab opens it in an isolated panel and emits AttachTerminal
     let t2_rect = app
         .last_tabs_geom
         .iter()
         .find_map(|h| match h {
-            TabHitbox::Terminal { address, rect } if address == "t2" => Some(*rect),
+            TabHitbox::UnattachedTerminal { address, rect } if address == "t2" => Some(*rect),
             _ => None,
         })
         .expect("t2 tab hitbox");
@@ -1510,18 +1512,34 @@ fn tab_bar_and_footer_inherit_app_background() {
         .last_tabs_geom
         .iter()
         .find_map(|h| match h {
-            TabHitbox::Terminal { address, rect } if address == "t1" => Some(*rect),
+            TabHitbox::Panel { panel_id, rect } if *panel_id == 1 => Some(*rect),
             _ => None,
         })
-        .expect("t1 tab hitbox");
+        .expect("t1 panel hitbox");
     let t2_rect = app
         .last_tabs_geom
         .iter()
         .find_map(|h| match h {
-            TabHitbox::Terminal { address, rect } if address == "t2" => Some(*rect),
+            TabHitbox::UnattachedTerminal { address, rect } if address == "t2" => Some(*rect),
             _ => None,
         })
-        .expect("t2 tab hitbox");
+        .expect("t2 unattached tab hitbox");
+    let split_h_rect = app
+        .last_tabs_geom
+        .iter()
+        .find_map(|h| match h {
+            TabHitbox::SplitHorizontal(rect) => Some(*rect),
+            _ => None,
+        })
+        .expect("SplitHorizontal tab hitbox");
+    let split_v_rect = app
+        .last_tabs_geom
+        .iter()
+        .find_map(|h| match h {
+            TabHitbox::SplitVertical(rect) => Some(*rect),
+            _ => None,
+        })
+        .expect("SplitVertical tab hitbox");
     let new_rect = app
         .last_tabs_geom
         .iter()
@@ -1553,7 +1571,7 @@ fn tab_bar_and_footer_inherit_app_background() {
         assert_eq!(cell.fg, Theme::OLD_WHITE);
     }
 
-    // Trailing "│" separator and empty tab-bar space before [+ New Terminal] inherit app background
+    // Trailing "│" separator and empty tab-bar space before [+H] inherit app background
     let trailing_sep_x = t2_rect.x + t2_rect.width;
     let trailing_sep = buf
         .cell((trailing_sep_x, 0))
@@ -1563,22 +1581,36 @@ fn tab_bar_and_footer_inherit_app_background() {
     assert_ne!(trailing_sep.bg, Theme::SUMI_INK0);
 
     assert!(
-        trailing_sep_x + 1 < new_rect.x,
+        trailing_sep_x + 1 < split_h_rect.x,
         "expected empty tab-bar space"
     );
-    for x in (trailing_sep_x + 1)..new_rect.x {
+    for x in (trailing_sep_x + 1)..split_h_rect.x {
         let cell = buf.cell((x, 0)).expect("empty tab-bar cell");
         assert_eq!(cell.symbol(), " ");
         assert_eq!(cell.bg, Color::Reset);
         assert_ne!(cell.bg, Theme::SUMI_INK0);
     }
 
-    // [+ New Terminal] button matches tab_inactive style: SUMI_INK3 background, OLD_WHITE foreground
-    for x in new_rect.x..new_rect.x + new_rect.width {
-        let cell = buf.cell((x, 0)).expect("new terminal button cell");
-        assert_eq!(cell.bg, Theme::SUMI_INK3);
-        assert_eq!(cell.fg, Theme::OLD_WHITE);
-        assert!(!cell.modifier.contains(Modifier::BOLD));
+    // 1-char Color::Reset gaps between [+H], [+V], and [+ New Terminal]
+    assert_eq!(split_h_rect.x + split_h_rect.width + 1, split_v_rect.x);
+    assert_eq!(split_v_rect.x + split_v_rect.width + 1, new_rect.x);
+    assert_eq!(
+        buf.cell((split_v_rect.x - 1, 0)).expect("gap before +V").bg,
+        Color::Reset
+    );
+    assert_eq!(
+        buf.cell((new_rect.x - 1, 0)).expect("gap before +New").bg,
+        Color::Reset
+    );
+
+    // [+H], [+V], and [+ New Terminal] buttons match tab_new_terminal style: SUMI_INK3 bg, OLD_WHITE fg, no bold
+    for btn_rect in [split_h_rect, split_v_rect, new_rect] {
+        for x in btn_rect.x..btn_rect.x + btn_rect.width {
+            let cell = buf.cell((x, 0)).expect("action button cell");
+            assert_eq!(cell.bg, Theme::SUMI_INK3);
+            assert_eq!(cell.fg, Theme::OLD_WHITE);
+            assert!(!cell.modifier.contains(Modifier::BOLD));
+        }
     }
 }
 
