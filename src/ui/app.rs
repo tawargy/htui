@@ -197,6 +197,7 @@ impl TuiApp {
                 command_or_template,
                 task,
                 space,
+                target: _,
             } => {
                 self.dialog = None;
                 actions.push(AppAction::Spawn {
@@ -933,6 +934,10 @@ impl TuiApp {
                 self.should_quit = true;
                 actions.push(AppAction::Quit);
             }
+            Command::SplitSpawnHorizontal
+            | Command::SplitSpawnVertical
+            | Command::PrevPanel
+            | Command::NextPanel => {}
         }
     }
 

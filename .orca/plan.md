@@ -87,10 +87,10 @@ src/layout/panel.rs (PanelId, PanelLayout, SpaceLayout)
 
 ### Phase 1: Layout Model, Spawn Targets & Keymap Foundation
 - [x] Task 1: Add `PanelId`, `PanelLayout`, and `SpaceLayout` in `src/layout/panel.rs` and export from `src/layout/mod.rs`
-- [ ] Task 2: Add `SpawnTarget` to `SpawnDialog` / `DialogOutcome` and add panel/split-spawn commands to `PrefixRouter` (`src/ui/keymap.rs`)
+- [x] Task 2: Add `SpawnTarget` to `SpawnDialog` / `DialogOutcome` and add panel/split-spawn commands to `PrefixRouter` (`src/ui/keymap.rs`)
 
 ### Checkpoint 1: Foundation Unit Tests
-- [ ] `cargo test --lib` passes cleanly
+- [x] `cargo test --lib` passes cleanly
 
 ### Phase 2: Backward-Compatible Storage & Core `SpaceLayout` Adoption
 - [ ] Task 3: Migrate `LayoutDoc` & `LayoutStore` in `src/layout/store.rs` to `HashMap<String, SpaceLayout>` with legacy `SplitTree` deserialization, update callers/tests to compile, and add migration tests in `tests/layout.rs`

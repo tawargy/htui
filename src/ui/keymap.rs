@@ -8,6 +8,10 @@ use crate::layout::tree::NavDir;
 pub enum Command {
     SplitHorizontal,
     SplitVertical,
+    SplitSpawnHorizontal,
+    SplitSpawnVertical,
+    PrevPanel,
+    NextPanel,
     ClosePane,
     FocusDir(NavDir),
     TakeOver,
@@ -84,6 +88,10 @@ impl PrefixRouter {
                 KeyCode::Char('"') | KeyCode::Char('-') => {
                     RouteResult::Command(Command::SplitVertical)
                 }
+                KeyCode::Char('H') => RouteResult::Command(Command::SplitSpawnHorizontal),
+                KeyCode::Char('V') => RouteResult::Command(Command::SplitSpawnVertical),
+                KeyCode::Char('[') => RouteResult::Command(Command::PrevPanel),
+                KeyCode::Char(']') => RouteResult::Command(Command::NextPanel),
                 KeyCode::Char('x') | KeyCode::Char('q') => RouteResult::Command(Command::ClosePane),
                 KeyCode::Char('h') | KeyCode::Left => {
                     RouteResult::Command(Command::FocusDir(NavDir::Left))
@@ -123,6 +131,9 @@ impl PrefixRouter {
         vec![
             ("Ctrl+B % / |", "Split pane horizontally"),
             ("Ctrl+B \" / -", "Split pane vertically"),
+            ("Ctrl+B H", "Split horizontally & spawn"),
+            ("Ctrl+B V", "Split vertically & spawn"),
+            ("Ctrl+B [ / ]", "Previous / next panel"),
             ("Ctrl+B x / q", "Close focused pane"),
             ("Ctrl+B h/j/k/l", "Focus pane by direction"),
             ("Ctrl+B t", "Take over observing pane"),
@@ -224,5 +235,43 @@ mod tests {
         assert!(bindings.contains(&("Ctrl+B x / q", "Close focused pane")));
         assert!(bindings.contains(&("Ctrl+B d", "Detach and quit htui")));
         assert!(!bindings.iter().any(|(key, _)| *key == "Ctrl+B d / q"));
+        assert!(bindings.len() <= 18);
+        assert!(bindings.iter().any(|(k, _)| k.contains("Ctrl+B H")));
+        assert!(bindings.iter().any(|(k, _)| k.contains("Ctrl+B V")));
+        assert!(bindings.iter().any(|(k, _)| k.contains("[") && k.contains("]")));
+    }
+
+    #[test]
+    fn ctrl_b_panel_and_split_spawn_commands() {
+        let mut router = PrefixRouter::new(Duration::from_millis(1500));
+        let t0 = Instant::now();
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+
+        let cases = [
+            (
+                KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT),
+                Command::SplitSpawnHorizontal,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::SHIFT),
+                Command::SplitSpawnVertical,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+                Command::PrevPanel,
+            ),
+            (
+                KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+                Command::NextPanel,
+            ),
+        ];
+
+        for (key, expected) in cases {
+            assert_eq!(router.route(ctrl_b, false, t0), RouteResult::PrefixArmed);
+            assert_eq!(
+                router.route(key, false, t0 + Duration::from_millis(50)),
+                RouteResult::Command(expected)
+            );
+        }
     }
 }

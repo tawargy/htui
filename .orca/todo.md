@@ -29,16 +29,16 @@
 **Description:** Introduce `SpawnTarget` (`NewPanel`, `IntoPane { panel_id, pane_id }`, `SplitPane { panel_id, pane_id, axis }`) in `src/ui/dialogs/spawn.rs` and include it in `SpawnDialog` and `DialogOutcome::SubmitSpawn`. Keep `SpawnDialog::new` defaulting to `SpawnTarget::NewPanel` and add `SpawnDialog::with_target`. In `src/ui/keymap.rs`, add `Command::SplitSpawnHorizontal` (`Ctrl+B H`), `Command::SplitSpawnVertical` (`Ctrl+B V`), `Command::PrevPanel` (`Ctrl+B [`), and `Command::NextPanel` (`Ctrl+B ]`), updating `bindings_help()` (keeping total lines <= 18) and adding unit tests. Wire stub match arms in `src/ui/app.rs` (`AppAction::Spawn` still builds cleanly).
 
 **Acceptance criteria:**
-- [ ] `SpawnTarget` is defined and carried through `SpawnDialog` and `DialogOutcome::SubmitSpawn`.
-- [ ] `SpawnDialog::render` clearly indicates when spawning into a new panel vs horizontal/vertical split.
-- [ ] `PrefixRouter` routes `Ctrl+B H` → `SplitSpawnHorizontal`, `Ctrl+B V` → `SplitSpawnVertical`, `Ctrl+B [` → `PrevPanel`, and `Ctrl+B ]` → `NextPanel`, while preserving `%`/`|` and `"`/`-`.
-- [ ] `PrefixRouter::bindings_help()` lists all new bindings and stays <= 18 entries so `dialogs_snapshot` passes without clipping.
+- [x] `SpawnTarget` is defined and carried through `SpawnDialog` and `DialogOutcome::SubmitSpawn`.
+- [x] `SpawnDialog::render` clearly indicates when spawning into a new panel vs horizontal/vertical split.
+- [x] `PrefixRouter` routes `Ctrl+B H` → `SplitSpawnHorizontal`, `Ctrl+B V` → `SplitSpawnVertical`, `Ctrl+B [` → `PrevPanel`, and `Ctrl+B ]` → `NextPanel`, while preserving `%`/`|` and `"`/`-`.
+- [x] `PrefixRouter::bindings_help()` lists all new bindings and stays <= 18 entries so `dialogs_snapshot` passes without clipping.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib ui::keymap::tests`
-- [ ] Tests pass: `cargo test --lib ui::dialogs::spawn::tests`
-- [ ] Tests pass: `cargo test --test ui_snapshots dialogs_snapshot`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib ui::keymap::tests`
+- [x] Tests pass: `cargo test --lib ui::dialogs::spawn::tests`
+- [x] Tests pass: `cargo test --test ui_snapshots dialogs_snapshot`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
@@ -53,8 +53,8 @@
 ---
 
 ## Checkpoint 1: Foundation Unit Tests
-- [ ] `cargo test --lib` passes with 0 failures
-- [ ] `cargo check --all-targets` builds cleanly
+- [x] `cargo test --lib` passes with 0 failures
+- [x] `cargo check --all-targets` builds cleanly
 
 ---
 

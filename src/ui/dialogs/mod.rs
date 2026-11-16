@@ -13,7 +13,7 @@ pub use confirm::{ConfirmAction, ConfirmDialog};
 pub use help::HelpDialog;
 pub use new_space::NewSpaceDialog;
 pub use rename::RenameSpaceDialog;
-pub use spawn::SpawnDialog;
+pub use spawn::{SpawnDialog, SpawnTarget};
 
 #[derive(Debug, Clone)]
 pub enum ActiveDialog {
@@ -32,6 +32,7 @@ pub enum DialogOutcome {
         command_or_template: String,
         task: String,
         space: String,
+        target: SpawnTarget,
     },
     SubmitConfirm(ConfirmAction),
     SubmitNewSpace(String),
