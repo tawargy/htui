@@ -23,11 +23,11 @@ use crate::hc::types::{EventPayload, RunParams};
 use crate::layout::presence::PresenceManager;
 use crate::layout::panel::SpaceLayout;
 use crate::layout::store::LayoutStore;
-use crate::layout::tree::TermRef;
 use crate::model::reducer::{apply, ModelInput};
 use crate::model::tree::UNASSIGNED_SPACE;
 use crate::term::session::{AttachSession, SessionState};
 use crate::ui::app::{AppAction, TuiApp};
+use crate::ui::dialogs::SpawnTarget;
 
 pub fn restore_terminal() {
     let _ = disable_raw_mode();
@@ -169,6 +169,7 @@ async fn run_tui_loop(
                     backoff_secs = 1;
                     reconnect_at = None;
                     prune_and_sync_empty_spaces(&mut app, rpc.as_ref(), &store).await;
+                    reconcile_and_sync_live_terminals(&mut app, rpc.as_ref(), &store).await;
                     app.set_toast("Reconnected to hc core", now);
                     app.refresh_sidebar();
                 } else {
@@ -228,6 +229,7 @@ async fn run_tui_loop(
                         m.terminals.retain(|t| t.is_live());
                         app.model = apply(app.model, ModelInput::Missed(m));
                         prune_and_sync_empty_spaces(&mut app, rpc.as_ref(), &store).await;
+                        reconcile_and_sync_live_terminals(&mut app, rpc.as_ref(), &store).await;
                         app.refresh_sidebar();
                     }
                     Some(Ok(Some(EventMessage::Heartbeat(_)))) => {}
@@ -313,6 +315,8 @@ pub async fn reconcile_startup_layouts(
         space_layout.collapse_empty_splits_or_prune();
     }
 
+    let reconciled_spaces = app.reconcile_live_terminals();
+
     let mut removed_from_store: HashSet<String> = HashSet::new();
     let stale_spaces: Vec<String> = app
         .layouts
@@ -348,7 +352,9 @@ pub async fn reconcile_startup_layouts(
         let _ = store.prune_empty_spaces(rpc, &removed_from_store).await;
     }
 
-    for sp in pruned_spaces {
+    let mut spaces_to_save: HashSet<String> = pruned_spaces.into_iter().collect();
+    spaces_to_save.extend(reconciled_spaces);
+    for sp in spaces_to_save {
         if !removed_from_store.contains(&sp) {
             if let Some(space_layout) = app.layouts.spaces.get(&sp) {
                 if space_layout.has_terminals() {
@@ -390,6 +396,21 @@ async fn prune_and_sync_empty_spaces(
     }
 }
 
+async fn reconcile_and_sync_live_terminals(
+    app: &mut TuiApp,
+    rpc: Option<&RpcClient>,
+    store: &LayoutStore,
+) {
+    let modified = app.reconcile_live_terminals();
+    for sp in modified {
+        if let Some(space_layout) = app.layouts.spaces.get(&sp) {
+            if space_layout.has_terminals() {
+                let _ = store.save_space(rpc, &sp, space_layout).await;
+            }
+        }
+    }
+}
+
 pub async fn handle_core_event(
     ev: EventPayload,
     app: &mut TuiApp,
@@ -421,6 +442,7 @@ pub async fn handle_core_event(
         }
     }
     prune_and_sync_empty_spaces(app, rpc, store).await;
+    reconcile_and_sync_live_terminals(app, rpc, store).await;
     app.refresh_sidebar();
 }
 
@@ -488,6 +510,7 @@ pub async fn dispatch_action(
             command_or_template,
             task,
             space,
+            target,
         } => {
             if let Some(client) = rpc {
                 let mut argv = vec![command_or_template];
@@ -512,24 +535,26 @@ pub async fn dispatch_action(
                     Ok(term) => {
                         let addr = term.address.clone();
                         app.model.terminals.insert(addr.clone(), term);
-                        if let Some(sp) = &target_space {
+                        let orig_space = app.active_space.clone();
+                        let switched_space = if let Some(sp) = &target_space {
                             app.model.declared_spaces.insert(sp.clone());
-                            if let Some(removed) = app.switch_space(sp.clone()) {
-                                let _ = store.remove_space(Some(client), &removed).await;
+                            if *sp != orig_space {
+                                if let Some(removed) = app.switch_space(sp.clone()) {
+                                    let _ = store.remove_space(Some(client), &removed).await;
+                                }
+                                true
+                            } else {
+                                false
                             }
-                        }
-                        if let Some(pid) = app
-                            .focused_pane
-                            .or_else(|| app.current_tree().pane_ids().into_iter().next())
-                        {
-                            app.focused_pane = Some(pid);
-                            app.current_tree_mut().set_terminal(
-                                pid,
-                                Some(TermRef {
-                                    address: addr.clone(),
-                                }),
-                            );
-                        }
+                        } else {
+                            false
+                        };
+                        let effective_target = if switched_space {
+                            SpawnTarget::NewPanel
+                        } else {
+                            target
+                        };
+                        app.place_spawned_terminal(&addr, effective_target);
                         app.sidebar_focused = false;
                         app.refresh_sidebar();
                         if let Some(fc) = framed {

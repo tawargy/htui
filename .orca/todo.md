@@ -128,15 +128,15 @@
 **Description:** Update `AppAction::Spawn` in `src/ui/app.rs` and `src/ui/event_loop.rs` to carry `target: SpawnTarget` and execute `NewPanel`, `IntoPane`, and `SplitPane` cleanly (reusing a sole 1-pane empty placeholder panel on `NewPanel`, creating a new isolated panel otherwise, and saving `SpaceLayout`). Update `Command::ClosePane`, `prune_empty_spaces`, `prune_terminal_from_spaces`, and `cleanup_empty_spaces_on_quit` in `src/ui/app.rs` to operate per-panel (closing a panel when its last pane closes while other panels exist, and removing the space only when its last panel closes). Add `TuiApp::reconcile_live_terminals()` and invoke it in `reconcile_startup_layouts`, `handle_core_event`, `Missed`, and reconnect in `src/ui/event_loop.rs` so external/pre-existing `hc` terminals are deterministically placed into individual panels.
 
 **Acceptance criteria:**
-- [ ] `AppAction::Spawn` with `SpawnTarget::NewPanel` creates a new isolated panel and focuses it without modifying existing panels; `IntoPane` fills the targeted empty pane; `SplitPane` splits the targeted pane along `axis` inside its panel and attaches the new terminal.
-- [ ] `Command::ClosePane` on a multi-pane panel closes only that pane; on a single-pane panel when other panels exist in the space, removes only that panel and switches to an adjacent panel; on the last panel in the space, cleans up the space as before.
-- [ ] `prune_empty_spaces`, `prune_terminal_from_spaces`, and `cleanup_empty_spaces_on_quit` remove emptied panels when other panels remain and remove emptied spaces when no panels have terminals.
-- [ ] `reconcile_startup_layouts` and core event reconciliation deterministically place unassigned live terminals (sorted by `(created_ms, address)`) into individual panels without merging them into one panel or overwriting existing panels.
+- [x] `AppAction::Spawn` with `SpawnTarget::NewPanel` creates a new isolated panel and focuses it without modifying existing panels; `IntoPane` fills the targeted empty pane; `SplitPane` splits the targeted pane along `axis` inside its panel and attaches the new terminal.
+- [x] `Command::ClosePane` on a multi-pane panel closes only that pane; on a single-pane panel when other panels exist in the space, removes only that panel and switches to an adjacent panel; on the last panel in the space, cleans up the space as before.
+- [x] `prune_empty_spaces`, `prune_terminal_from_spaces`, and `cleanup_empty_spaces_on_quit` remove emptied panels when other panels remain and remove emptied spaces when no panels have terminals.
+- [x] `reconcile_startup_layouts` and core event reconciliation deterministically place unassigned live terminals (sorted by `(created_ms, address)`) into individual panels without merging them into one panel or overwriting existing panels.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test ui_snapshots`
-- [ ] Tests pass: `cargo test --test layout`
-- [ ] Full suite passes: `cargo test`
+- [x] Tests pass: `cargo test --test ui_snapshots`
+- [x] Tests pass: `cargo test --test layout`
+- [x] Full suite passes: `cargo test`
 
 **Dependencies:** Task 4
 
@@ -149,8 +149,8 @@
 ---
 
 ## Checkpoint 3: Feature Complete
-- [ ] `cargo test` passes across all unit and integration tests
-- [ ] All panel isolation, splitting, closing, and reconciliation behaviors implemented
+- [x] `cargo test` passes across all unit and integration tests
+- [x] All panel isolation, splitting, closing, and reconciliation behaviors implemented
 
 ---
 

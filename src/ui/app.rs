@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::config::Config;
 use crate::hc::types::Terminal;
-use crate::layout::panel::{PanelId, SpaceLayout};
+use crate::layout::panel::{PanelId, PanelLayout, SpaceLayout};
 use crate::layout::store::LayoutDoc;
 use crate::layout::tree::{PaneId, SplitAxis, SplitTree, TermRef};
 use crate::model::reducer::AppModelState;
@@ -41,6 +41,7 @@ pub enum AppAction {
         command_or_template: String,
         task: String,
         space: String,
+        target: SpawnTarget,
     },
     Kill(String),
     Remove(String),
@@ -399,13 +400,14 @@ impl TuiApp {
                 command_or_template,
                 task,
                 space,
-                target: _,
+                target,
             } => {
                 self.dialog = None;
                 actions.push(AppAction::Spawn {
                     command_or_template,
                     task,
                     space,
+                    target,
                 });
             }
             DialogOutcome::SubmitConfirm(ConfirmAction::KillTerminal(addr)) => {
@@ -971,32 +973,111 @@ impl TuiApp {
             }
             Command::ClosePane => {
                 if let Some(pid) = self.focused_pane {
+                    let cur_space = self.active_space.clone();
                     let closed_addr = self
                         .current_tree()
                         .find_terminal(pid)
                         .map(|t| t.address.clone());
-                    let had_multi = self.current_tree().pane_ids().len() > 1;
+                    let had_multi_panes = self.current_tree().pane_ids().len() > 1;
+                    let panel_count_before = self
+                        .layouts
+                        .spaces
+                        .get(&cur_space)
+                        .map_or(1, |s| s.panels.len());
+                    let active_panel_id = self.active_panel_id();
+
                     if let Some(addr) = closed_addr.as_deref() {
                         self.current_tree_mut().set_terminal(pid, None);
                         self.kill_or_remove_terminal(addr, actions);
                     }
-                    if had_multi {
+
+                    if had_multi_panes {
                         self.current_tree_mut().close(pid);
-                        self.focused_pane = self.current_tree().pane_ids().into_iter().next();
-                    }
-                    let cur_space = self.active_space.clone();
-                    if cur_space != UNASSIGNED_SPACE {
-                        if !had_multi {
-                            self.close_space_terminals(&cur_space, actions);
-                            self.remove_empty_space(&cur_space);
-                            actions.push(AppAction::RemoveLayout(cur_space));
-                        } else if !self.space_has_open_terminals(&cur_space) {
-                            self.remove_empty_space(&cur_space);
+                        let next_pid = self.current_tree().pane_ids().into_iter().next();
+                        self.set_focused_pane(next_pid);
+
+                        if panel_count_before > 1 {
+                            if let Some(panel_id) = active_panel_id {
+                                let panel_empty = self
+                                    .layouts
+                                    .spaces
+                                    .get(&cur_space)
+                                    .and_then(|s| s.panel(panel_id))
+                                    .is_some_and(|p| !p.has_terminals());
+                                if panel_empty {
+                                    if let Some(space_layout) =
+                                        self.layouts.spaces.get_mut(&cur_space)
+                                    {
+                                        space_layout.remove_panel(panel_id);
+                                    }
+                                    self.sync_focused_pane_from_active_panel();
+                                    self.selection = None;
+                                    self.attach_unattached_in_active_panel(actions);
+                                }
+                            }
+                        }
+
+                        if cur_space != UNASSIGNED_SPACE {
+                            if !self.space_has_open_terminals(&cur_space) {
+                                self.remove_empty_space(&cur_space);
+                                actions.push(AppAction::RemoveLayout(cur_space));
+                            } else {
+                                actions.push(AppAction::SaveLayout(cur_space));
+                            }
+                        } else if !self
+                            .layouts
+                            .spaces
+                            .get(UNASSIGNED_SPACE)
+                            .is_some_and(SpaceLayout::has_terminals)
+                        {
+                            if let Some(space_layout) =
+                                self.layouts.spaces.get_mut(UNASSIGNED_SPACE)
+                            {
+                                space_layout.collapse_empty_splits_or_prune();
+                            }
+                            self.sync_focused_pane_from_active_panel();
                             actions.push(AppAction::RemoveLayout(cur_space));
                         } else {
                             actions.push(AppAction::SaveLayout(cur_space));
                         }
-                    } else if !had_multi {
+                    } else if panel_count_before > 1 {
+                        if let Some(panel_id) = active_panel_id {
+                            if let Some(space_layout) = self.layouts.spaces.get_mut(&cur_space) {
+                                space_layout.remove_panel(panel_id);
+                            }
+                        }
+                        self.sync_focused_pane_from_active_panel();
+                        self.selection = None;
+                        self.attach_unattached_in_active_panel(actions);
+
+                        if cur_space != UNASSIGNED_SPACE {
+                            if !self.space_has_open_terminals(&cur_space) {
+                                self.remove_empty_space(&cur_space);
+                                actions.push(AppAction::RemoveLayout(cur_space));
+                            } else {
+                                actions.push(AppAction::SaveLayout(cur_space));
+                            }
+                        } else if !self
+                            .layouts
+                            .spaces
+                            .get(UNASSIGNED_SPACE)
+                            .is_some_and(SpaceLayout::has_terminals)
+                        {
+                            if let Some(next_space) = self.next_named_space() {
+                                self.layouts.spaces.remove(UNASSIGNED_SPACE);
+                                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+                                self.switch_space(next_space);
+                            } else {
+                                actions.push(AppAction::RemoveLayout(UNASSIGNED_SPACE.to_string()));
+                            }
+                        } else {
+                            actions.push(AppAction::SaveLayout(cur_space));
+                        }
+                    } else if cur_space != UNASSIGNED_SPACE {
+                        self.close_space_terminals(&cur_space, actions);
+                        self.remove_empty_space(&cur_space);
+                        actions.push(AppAction::RemoveLayout(cur_space));
+                    } else {
                         let extra_removed = self.close_space_terminals(UNASSIGNED_SPACE, actions);
                         if let Some(next_space) = self.next_named_space() {
                             self.layouts.spaces.remove(UNASSIGNED_SPACE);
@@ -1007,13 +1088,6 @@ impl TuiApp {
                         } else {
                             self.set_toast("Workspace is already empty", now);
                         }
-                    } else if !self.current_tree().has_terminals() {
-                        if self.current_tree_mut().collapse_empty_splits() {
-                            self.focused_pane = self.current_tree().pane_ids().into_iter().next();
-                        }
-                        actions.push(AppAction::RemoveLayout(cur_space));
-                    } else {
-                        actions.push(AppAction::SaveLayout(cur_space));
                     }
                     self.refresh_sidebar();
                 }
@@ -1351,12 +1425,13 @@ impl TuiApp {
             }
             if !space_layout.has_terminals() && (pruned > 0 || sp != &initial_active) {
                 space_layout.collapse_empty_splits_or_prune();
-                if sp == &initial_active {
-                    self.focused_pane = space_layout.active_panel().and_then(|p| {
-                        p.focused_pane
-                            .or_else(|| p.tree.pane_ids().into_iter().next())
-                    });
-                }
+            }
+            if pruned > 0 && sp == &initial_active {
+                space_layout.ensure_valid_active_panel();
+                self.focused_pane = space_layout.active_panel().and_then(|p| {
+                    p.focused_pane
+                        .or_else(|| p.tree.pane_ids().into_iter().next())
+                });
             }
             if pruned > 0 {
                 pruned_by_space.insert(sp.clone(), pruned);
@@ -1403,6 +1478,146 @@ impl TuiApp {
 
         emptied.sort();
         emptied
+    }
+
+    fn sync_focused_pane_from_active_panel(&mut self) {
+        self.focused_pane = self
+            .layouts
+            .spaces
+            .get(&self.active_space)
+            .and_then(SpaceLayout::active_panel)
+            .and_then(|p| {
+                p.focused_pane
+                    .or_else(|| p.tree.pane_ids().into_iter().next())
+            });
+    }
+
+    pub fn place_spawned_terminal(&mut self, addr: &str, target: SpawnTarget) {
+        let space_name = self.active_space.clone();
+        let space_layout = self
+            .layouts
+            .spaces
+            .entry(space_name)
+            .or_insert_with(SpaceLayout::new);
+        let term_ref = TermRef {
+            address: addr.to_string(),
+        };
+
+        match target {
+            SpawnTarget::IntoPane { panel_id, pane_id } => {
+                if space_layout.set_active_panel(panel_id) {
+                    if let Some(panel) = space_layout.panel_mut(panel_id) {
+                        if panel.tree.set_terminal(pane_id, Some(term_ref.clone())) {
+                            panel.focused_pane = Some(pane_id);
+                            self.focused_pane = Some(pane_id);
+                            return;
+                        }
+                    }
+                }
+            }
+            SpawnTarget::SplitPane {
+                panel_id,
+                pane_id,
+                axis,
+            } => {
+                if space_layout.set_active_panel(panel_id) {
+                    if let Some(panel) = space_layout.panel_mut(panel_id) {
+                        if let Some(new_pane_id) =
+                            panel.tree.split(pane_id, axis, Some(term_ref.clone()))
+                        {
+                            panel.focused_pane = Some(new_pane_id);
+                            self.focused_pane = Some(new_pane_id);
+                            return;
+                        }
+                    }
+                }
+            }
+            SpawnTarget::NewPanel => {}
+        }
+
+        if space_layout.is_single_empty_placeholder() {
+            let panel = space_layout.active_panel_mut_or_default();
+            if let Some(pid) = panel
+                .focused_pane
+                .or_else(|| panel.tree.pane_ids().into_iter().next())
+            {
+                panel.tree.set_terminal(pid, Some(term_ref));
+                panel.focused_pane = Some(pid);
+                self.focused_pane = Some(pid);
+                return;
+            }
+        }
+        let (_panel_id, pane_id) = space_layout.add_panel(Some(term_ref));
+        self.focused_pane = Some(pane_id);
+    }
+
+    /// Deterministically places live terminals not yet present in any panel into
+    /// individual panels in their space (sorted by `(created_ms, address)`), without
+    /// stealing `active_panel` when the active panel is already occupied.
+    pub fn reconcile_live_terminals(&mut self) -> Vec<String> {
+        let mut placed: HashSet<String> = HashSet::new();
+        for space_layout in self.layouts.spaces.values() {
+            for addr in space_layout.terminal_addresses() {
+                placed.insert(addr);
+            }
+        }
+
+        let mut unassigned: Vec<(u64, String, String)> = self
+            .model
+            .terminals
+            .values()
+            .filter(|t| t.is_live() && !placed.contains(&t.address))
+            .map(|t| {
+                let space = TerminalEntry {
+                    terminal: t.clone(),
+                }
+                .space_name()
+                .to_string();
+                (t.created_ms, t.address.clone(), space)
+            })
+            .collect();
+        unassigned.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+        let mut modified_spaces: HashSet<String> = HashSet::new();
+        for (_, addr, space_name) in unassigned {
+            if space_name != UNASSIGNED_SPACE {
+                self.model.declared_spaces.insert(space_name.clone());
+            }
+            let space_layout = self
+                .layouts
+                .spaces
+                .entry(space_name.clone())
+                .or_insert_with(SpaceLayout::new);
+            let active_was_occupied = space_layout
+                .active_panel()
+                .is_some_and(PanelLayout::has_terminals);
+            if space_layout.is_single_empty_placeholder() {
+                let panel = space_layout.active_panel_mut_or_default();
+                if let Some(pid) = panel
+                    .focused_pane
+                    .or_else(|| panel.tree.pane_ids().into_iter().next())
+                {
+                    panel.tree.set_terminal(pid, Some(TermRef { address: addr }));
+                    panel.focused_pane = Some(pid);
+                }
+            } else {
+                let prev_active = space_layout.active_panel;
+                space_layout.add_panel(Some(TermRef { address: addr }));
+                if active_was_occupied {
+                    if let Some(prev_id) = prev_active {
+                        space_layout.set_active_panel(prev_id);
+                    }
+                }
+            }
+            if space_name == self.active_space {
+                self.sync_focused_pane_from_active_panel();
+            }
+            modified_spaces.insert(space_name);
+        }
+
+        let mut result: Vec<String> = modified_spaces.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Removes `addr` from all space pane trees and returns any spaces
@@ -1479,5 +1694,86 @@ mod tests {
             assert_eq!(app.active_space, UNASSIGNED_SPACE);
             assert_eq!(app.active_toast(now), Some("Invalid space name"));
         }
+    }
+
+    #[test]
+    fn multipanel_close_pane_and_spawn_placement_and_reconcile() {
+        let mut app = TuiApp::new(Config::default(), Some("api".into()));
+        let mut t1 = Terminal {
+            address: "t1".into(),
+            state: "live".into(),
+            argv: vec!["zsh".into()],
+            created_ms: 10,
+            ..Default::default()
+        };
+        t1.labels.insert("space".into(), "api".into());
+        let mut t2 = Terminal {
+            address: "t2".into(),
+            state: "live".into(),
+            argv: vec!["claude".into()],
+            created_ms: 20,
+            ..Default::default()
+        };
+        t2.labels.insert("space".into(), "api".into());
+        let mut t3 = Terminal {
+            address: "t3".into(),
+            state: "live".into(),
+            argv: vec!["bash".into()],
+            created_ms: 5,
+            ..Default::default()
+        };
+        t3.labels.insert("space".into(), "api".into());
+
+        app.model.terminals.insert("t1".into(), t1);
+        app.model.terminals.insert("t2".into(), t2);
+        app.model.terminals.insert("t3".into(), t3);
+
+        // Reconcile deterministically by (created_ms, address): t3 (5), t1 (10), t2 (20)
+        let changed = app.reconcile_live_terminals();
+        assert_eq!(changed, vec!["api".to_string()]);
+        let api = &app.layouts.spaces["api"];
+        assert_eq!(api.panels.len(), 3);
+        assert_eq!(api.panels[0].terminal_addresses(), vec!["t3".to_string()]);
+        assert_eq!(api.panels[1].terminal_addresses(), vec!["t1".to_string()]);
+        assert_eq!(api.panels[2].terminal_addresses(), vec!["t2".to_string()]);
+        // Active panel stayed on panel 1 (first filled panel, not stolen by t1 or t2)
+        assert_eq!(api.active_panel, Some(api.panels[0].id));
+
+        // SplitPane placement splits only panel 1
+        let p1_id = api.panels[0].id;
+        let p1_pane = api.panels[0].focused_pane.unwrap();
+        let mut t4 = Terminal {
+            address: "t4".into(),
+            state: "live".into(),
+            argv: vec!["sh".into()],
+            created_ms: 30,
+            ..Default::default()
+        };
+        t4.labels.insert("space".into(), "api".into());
+        app.model.terminals.insert("t4".into(), t4);
+        app.place_spawned_terminal(
+            "t4",
+            SpawnTarget::SplitPane {
+                panel_id: p1_id,
+                pane_id: p1_pane,
+                axis: SplitAxis::Horizontal,
+            },
+        );
+        assert_eq!(app.layouts.spaces["api"].panels[0].tree.pane_ids().len(), 2);
+        assert_eq!(app.layouts.spaces["api"].panels[1].tree.pane_ids().len(), 1);
+
+        // Close single-pane panel 2 -> removes only panel 2, keeps space and remaining panels
+        let p2_id = app.layouts.spaces["api"].panels[1].id;
+        app.switch_panel(p2_id);
+        let now = Instant::now();
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        let key_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.handle_key(ctrl_b, now);
+        let actions = app.handle_key(key_x, now + Duration::from_millis(20));
+        assert!(actions.contains(&AppAction::Kill("t1".into())));
+        assert!(actions.contains(&AppAction::SaveLayout("api".into())));
+        assert!(!actions.contains(&AppAction::RemoveLayout("api".into())));
+        assert_eq!(app.layouts.spaces["api"].panels.len(), 2);
+        assert!(app.layouts.spaces.contains_key("api"));
     }
 }

@@ -99,6 +99,7 @@ async fn switch_back_reuses_existing_active_session() {
     use herdr_tui::hc::framed::Frame;
     use herdr_tui::layout::store::LayoutStore;
     use herdr_tui::ui::app::{AppAction, TuiApp};
+    use herdr_tui::ui::dialogs::SpawnTarget;
     use herdr_tui::ui::event_loop::dispatch_action;
 
     let srv = FakeHcServer::start().await.expect("start fake server");
@@ -115,6 +116,7 @@ async fn switch_back_reuses_existing_active_session() {
             command_or_template: "sh".to_string(),
             task: String::new(),
             space: "api".to_string(),
+            target: SpawnTarget::NewPanel,
         },
         &mut app,
         Some(&rpc),

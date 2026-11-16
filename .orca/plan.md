@@ -100,10 +100,10 @@ src/layout/panel.rs (PanelId, PanelLayout, SpaceLayout)
 
 ### Phase 3: Panel UI, Isolation, Lifecycle & Reconciliation
 - [x] Task 4: Update `src/ui/tabs.rs` for isolated panel tabs + `[+H]`/`[+V]`/`[+ New Terminal]`, and implement panel switching, split-isolation, and target-aware spawn/sidebar routing in `src/ui/app.rs`
-- [ ] Task 5: Implement multi-panel `ClosePane`, per-panel pruning/cleanup, `AppAction::Spawn` target handling, and deterministic external terminal placement in `src/ui/app.rs` and `src/ui/event_loop.rs`
+- [x] Task 5: Implement multi-panel `ClosePane`, per-panel pruning/cleanup, `AppAction::Spawn` target handling, and deterministic external terminal placement in `src/ui/app.rs` and `src/ui/event_loop.rs`
 
 ### Checkpoint 3: Feature Complete
-- [ ] `cargo test` passes with zero failures
+- [x] `cargo test` passes with zero failures
 
 ### Phase 4: End-to-End Snapshot & Integration Verification
 - [ ] Task 6: Add comprehensive multi-panel isolation, splitting, tab bar, lifecycle, and startup reconciliation tests in `tests/ui_snapshots.rs` and `tests/layout.rs`, and run `fmt` + `clippy`
