@@ -487,3 +487,94 @@ async fn dispatch_action_send_input_forwards_bytes_over_framed_channel() {
         "expected FRAME_DATA with {payload:?}, got {frames:?}"
     );
 }
+
+#[tokio::test]
+async fn attach_session_resize_lifecycle_observing_debounce_and_take_over_at() {
+    use fake_hc::{make_terminal, FRAME_RESIZE};
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let mut custom_term = make_terminal("t-obs", "sh");
+    custom_term["cols"] = serde_json::json!(112);
+    custom_term["rows"] = serde_json::json!(33);
+    srv.add_terminal(custom_term).await;
+
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    // 1. attach_observe initializes screen from res.terminal.cols/rows when non-zero
+    let mut session = AttachSession::new("t-obs".to_string(), 80, 24);
+    session.attach_observe(&framed).await.expect("observe");
+    assert_eq!(session.state, SessionState::Observing);
+    assert_eq!(session.screen.size(), (112, 33));
+
+    // 2. request_resize in Observing must NOT resize screen or send FRAME_RESIZE
+    let t0 = Instant::now();
+    assert!(!session.request_resize(60, 20, t0).expect("obs resize"));
+    assert_eq!(session.screen.size(), (112, 33));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let obs_frames = srv.recorded_frames().await;
+    assert!(
+        !obs_frames.iter().any(|f| f.kind == FRAME_RESIZE),
+        "Observing session must not send FRAME_RESIZE: {obs_frames:?}"
+    );
+
+    // 3. take_over_at promotes to Active at the target pane size and syncs screen
+    session
+        .take_over_at(&framed, 60, 20)
+        .await
+        .expect("take_over_at");
+    assert_eq!(session.state, SessionState::Active);
+    assert_eq!(session.screen.size(), (60, 20));
+
+    // 4. Duplicate request_resize at current screen size is a no-op
+    assert!(!session.request_resize(60, 20, t0).expect("dup resize"));
+    assert_eq!(session.screen.size(), (60, 20));
+
+    // 5. Un-debounced request_resize sends RESIZE and resizes screen
+    assert!(session.request_resize(70, 22, t0).expect("r1"));
+    assert_eq!(session.screen.size(), (70, 22));
+
+    // 6. Debounced request_resize keeps screen at 70x22 until flushed
+    assert!(!session
+        .request_resize(75, 25, t0 + Duration::from_millis(10))
+        .expect("r2 debounced"));
+    assert_eq!(
+        session.screen.size(),
+        (70, 22),
+        "screen must stay at old PTY size while RESIZE is debounced"
+    );
+
+    // 7. Reverting back to current size clears pending_resize
+    assert!(!session
+        .request_resize(70, 22, t0 + Duration::from_millis(15))
+        .expect("revert clears pending"));
+    assert!(!session
+        .flush_pending_resize(t0 + Duration::from_millis(100))
+        .expect("nothing pending"));
+
+    // 8. Debounced resize followed by flush_pending_resize_now sends immediately (< 50ms)
+    assert!(!session
+        .request_resize(82, 26, t0 + Duration::from_millis(20))
+        .expect("r3 debounced"));
+    assert_eq!(session.screen.size(), (70, 22));
+    assert!(session
+        .flush_pending_resize_now(t0 + Duration::from_millis(25))
+        .expect("flush now"));
+    assert_eq!(session.screen.size(), (82, 26));
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let resize_frames: Vec<(u16, u16)> = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.kind == FRAME_RESIZE && f.payload.len() >= 4)
+        .map(|f| {
+            (
+                u16::from_le_bytes([f.payload[0], f.payload[1]]),
+                u16::from_le_bytes([f.payload[2], f.payload[3]]),
+            )
+        })
+        .collect();
+    assert_eq!(resize_frames, vec![(70, 22), (82, 26)]);
+}

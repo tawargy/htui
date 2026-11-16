@@ -37,13 +37,13 @@
 **Description:** Refactor `AttachSession` in `src/term/session.rs` so `self.screen` always reflects the true PTY size rather than prematurely resizing during debounced drags or in `Observing` mode. Only call `self.screen.resize(cols, rows)` when `self.state == SessionState::Active` and `ch.send_resize(cols, rows)` is actually sent (in `request_resize` when un-debounced, in `flush_pending_resize` when the 50 ms debounce expires, and in a new `flush_pending_resize_now` method for drag completion). Skip redundant `send_resize` calls when `(cols, rows) == self.screen.size()` (clearing `pending_resize`). In `attach_observe`, initialize `self.screen` to `(res.terminal.cols, res.terminal.rows)` when non-zero. Add `take_over_at(&mut self, client: &FramedClient, cols: u16, rows: u16)` (with `take_over` delegating using `self.screen.size()`) so taking over an observed pane attaches at the pane's current inner size and syncs `self.screen`.
 
 **Acceptance criteria:**
-- [ ] `AttachSession::request_resize` does NOT resize `self.screen` when `state != SessionState::Active` or when debounced (`can_send == false`), and avoids sending duplicate `RESIZE` frames when size is unchanged.
-- [ ] `AttachSession::flush_pending_resize` resizes `self.screen` when `ch.send_resize` succeeds, and `flush_pending_resize_now` sends any pending resize immediately (bypassing the 50 ms debounce) and resizes `self.screen`.
-- [ ] `AttachSession::attach_observe` initializes `self.screen` from non-zero `res.terminal.cols`/`rows`, and `take_over_at` attaches at `(cols, rows)` and resizes `self.screen` to `(cols, rows)`.
+- [x] `AttachSession::request_resize` does NOT resize `self.screen` when `state != SessionState::Active` or when debounced (`can_send == false`), and avoids sending duplicate `RESIZE` frames when size is unchanged.
+- [x] `AttachSession::flush_pending_resize` resizes `self.screen` when `ch.send_resize` succeeds, and `flush_pending_resize_now` sends any pending resize immediately (bypassing the 50 ms debounce) and resizes `self.screen`.
+- [x] `AttachSession::attach_observe` initializes `self.screen` from non-zero `res.terminal.cols`/`rows`, and `take_over_at` attaches at `(cols, rows)` and resizes `self.screen` to `(cols, rows)`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --test term`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 

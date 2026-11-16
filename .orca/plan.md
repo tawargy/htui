@@ -50,7 +50,7 @@ Task 1: Sanitize symbols & enforce boundary/continuation invariants in Vt100Scre
 - [x] `cargo test --test term --test ui_snapshots` passes with new boundary/wide/zero-width/Arabic unit tests.
 
 ### Phase 2: Session & UI/Event-Loop Resize Synchronization
-- [ ] **Task 2:** Fix `AttachSession` resize lifecycle (`request_resize`, `flush_pending_resize`, `flush_pending_resize_now`, `attach_observe`, `take_over_at`).
+- [x] **Task 2:** Fix `AttachSession` resize lifecycle (`request_resize`, `flush_pending_resize`, `flush_pending_resize_now`, `attach_observe`, `take_over_at`).
 - [ ] **Task 3:** Synchronize `TuiApp` & `event_loop` (`EndDrag`, `sync_pane_sizes`, `tick` flush dirty flag, `AppAction::Spawn`, `AppAction::TakeOver`, `"size"` fallback).
 
 ### Checkpoint 2: Session & Event Loop Synchronization

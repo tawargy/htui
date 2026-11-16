@@ -53,10 +53,14 @@ impl AttachSession {
         let (res, handle) = client
             .attach(&self.terminal, cols, rows, true, true)
             .await?;
+        if res.terminal.cols > 0 && res.terminal.rows > 0 {
+            self.screen.resize(res.terminal.cols, res.terminal.rows);
+        }
         self.resize_notifications = res.resize_notifications;
         self.channel = Some(handle);
         self.state = SessionState::Observing;
         self.takeover_hint = false;
+        self.pending_resize = None;
         Ok(())
     }
 
@@ -73,23 +77,38 @@ impl AttachSession {
         self.channel = Some(handle);
         self.state = SessionState::Active;
         self.takeover_hint = false;
+        self.pending_resize = None;
         Ok(())
     }
 
-    /// Promotes the session to Active (`observe: false`) (TV-3).
-    pub async fn take_over(&mut self, client: &FramedClient) -> HcResult<()> {
+    /// Promotes the session to Active (`observe: false`) at the given dimensions (TV-3).
+    pub async fn take_over_at(
+        &mut self,
+        client: &FramedClient,
+        cols: u16,
+        rows: u16,
+    ) -> HcResult<()> {
         if let Some(old) = self.channel.take() {
             let _ = old.close().await;
         }
-        let (cols, rows) = self.screen.size();
+        let cols = cols.max(1);
+        let rows = rows.max(1);
         let (res, handle) = client
             .attach(&self.terminal, cols, rows, false, true)
             .await?;
+        self.screen.resize(cols, rows);
         self.resize_notifications = res.resize_notifications;
         self.channel = Some(handle);
         self.state = SessionState::Active;
         self.takeover_hint = false;
+        self.pending_resize = None;
         Ok(())
+    }
+
+    /// Promotes the session to Active (`observe: false`) using current screen dimensions (TV-3).
+    pub async fn take_over(&mut self, client: &FramedClient) -> HcResult<()> {
+        let (cols, rows) = self.screen.size();
+        self.take_over_at(client, cols, rows).await
     }
 
     /// Demotes the session back to Observing (`observe: true`).
@@ -121,8 +140,11 @@ impl AttachSession {
     pub fn request_resize(&mut self, cols: u16, rows: u16, now: Instant) -> HcResult<bool> {
         let cols = cols.max(1);
         let rows = rows.max(1);
-        self.screen.resize(cols, rows);
         if self.state != SessionState::Active {
+            return Ok(false);
+        }
+        if (cols, rows) == self.screen.size() {
+            self.pending_resize = None;
             return Ok(false);
         }
 
@@ -133,6 +155,7 @@ impl AttachSession {
         if can_send {
             if let Some(ch) = &self.channel {
                 ch.send_resize(cols, rows)?;
+                self.screen.resize(cols, rows);
                 self.last_resize_sent = Some(now);
                 self.pending_resize = None;
                 return Ok(true);
@@ -144,16 +167,38 @@ impl AttachSession {
     }
 
     pub fn flush_pending_resize(&mut self, now: Instant) -> HcResult<bool> {
+        self.flush_pending_resize_inner(now, false)
+    }
+
+    pub fn flush_pending_resize_now(&mut self, now: Instant) -> HcResult<bool> {
+        self.flush_pending_resize_inner(now, true)
+    }
+
+    fn flush_pending_resize_inner(
+        &mut self,
+        now: Instant,
+        ignore_debounce: bool,
+    ) -> HcResult<bool> {
         let Some((cols, rows)) = self.pending_resize else {
             return Ok(false);
         };
-        let ready = match self.last_resize_sent {
-            None => true,
-            Some(prev) => now.duration_since(prev) >= RESIZE_DEBOUNCE,
-        };
-        if ready && self.state == SessionState::Active {
+        if self.state != SessionState::Active {
+            self.pending_resize = None;
+            return Ok(false);
+        }
+        if (cols, rows) == self.screen.size() {
+            self.pending_resize = None;
+            return Ok(false);
+        }
+        let ready = ignore_debounce
+            || match self.last_resize_sent {
+                None => true,
+                Some(prev) => now.duration_since(prev) >= RESIZE_DEBOUNCE,
+            };
+        if ready {
             if let Some(ch) = &self.channel {
                 ch.send_resize(cols, rows)?;
+                self.screen.resize(cols, rows);
                 self.last_resize_sent = Some(now);
                 self.pending_resize = None;
                 return Ok(true);
