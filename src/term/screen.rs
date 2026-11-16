@@ -223,93 +223,6 @@ impl ScreenModel for AlacrittyScreen {
     }
 }
 
-pub struct Vt100Screen {
-    parser: vt100::Parser,
-}
-
-impl Vt100Screen {
-    pub fn new(cols: u16, rows: u16, scrollback_len: usize) -> Self {
-        Self {
-            parser: vt100::Parser::new(rows.max(1), cols.max(1), scrollback_len),
-        }
-    }
-}
-
-impl ScreenModel for Vt100Screen {
-    fn process(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
-    }
-
-    fn resize(&mut self, cols: u16, rows: u16) {
-        self.parser.set_size(rows.max(1), cols.max(1));
-    }
-
-    fn size(&self) -> (u16, u16) {
-        let (rows, cols) = self.parser.screen().size();
-        (cols, rows)
-    }
-
-    fn cursor(&self) -> (u16, u16, bool) {
-        let screen = self.parser.screen();
-        let (row, col) = screen.cursor_position();
-        (col, row, !screen.hide_cursor())
-    }
-
-    fn modes(&self) -> ScreenModes {
-        let screen = self.parser.screen();
-        ScreenModes {
-            app_cursor: screen.application_cursor(),
-            bracketed_paste: screen.bracketed_paste(),
-            alternate_screen: screen.alternate_screen(),
-            mouse_mode: map_vt100_mouse_mode(screen.mouse_protocol_mode()),
-            mouse_encoding: map_vt100_mouse_encoding(screen.mouse_protocol_encoding()),
-        }
-    }
-
-    fn scrollback(&self) -> usize {
-        self.parser.screen().scrollback()
-    }
-
-    fn set_scrollback(&mut self, offset: usize) {
-        self.parser.set_scrollback(offset);
-    }
-
-    fn cell(&self, row: u16, col: u16) -> Option<ScreenCell> {
-        let cell = self.parser.screen().cell(row, col)?;
-        let symbol = sanitize_cell_symbol(&cell.contents());
-
-        let mut modifiers = Modifier::empty();
-        if cell.bold() {
-            modifiers |= Modifier::BOLD;
-        }
-        if cell.italic() {
-            modifiers |= Modifier::ITALIC;
-        }
-        if cell.underline() {
-            modifiers |= Modifier::UNDERLINED;
-        }
-        if cell.inverse() {
-            modifiers |= Modifier::REVERSED;
-        }
-
-        Some(ScreenCell {
-            symbol,
-            fg: map_vt100_color(cell.fgcolor()),
-            bg: map_vt100_color(cell.bgcolor()),
-            modifiers,
-            wide_continuation: cell.is_wide_continuation(),
-        })
-    }
-
-    fn row_text(&self, row: u16) -> String {
-        screen_row_text(self, row)
-    }
-
-    fn render_to_buffer(&self, area: Rect, buf: &mut Buffer) {
-        screen_render_to_buffer(self, area, buf);
-    }
-}
-
 /// Strips control, format (`Cf`/soft-hyphen), and variation-selector codepoints
 /// before extracting the first grapheme so ZWJ/VS16 clusters cannot merge
 /// multiple wide glyphs or skew width between the terminal grid and ratatui.
@@ -518,32 +431,6 @@ pub fn preserve_first_grapheme(s: &str) -> String {
         .next()
         .map(String::from)
         .unwrap_or_else(|| " ".to_string())
-}
-
-fn map_vt100_color(c: vt100::Color) -> Color {
-    match c {
-        vt100::Color::Default => Color::Reset,
-        vt100::Color::Idx(i) => Color::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
-    }
-}
-
-fn map_vt100_mouse_mode(m: vt100::MouseProtocolMode) -> MouseProtocolMode {
-    match m {
-        vt100::MouseProtocolMode::None => MouseProtocolMode::None,
-        vt100::MouseProtocolMode::Press => MouseProtocolMode::Press,
-        vt100::MouseProtocolMode::PressRelease => MouseProtocolMode::PressRelease,
-        vt100::MouseProtocolMode::ButtonMotion => MouseProtocolMode::ButtonMotion,
-        vt100::MouseProtocolMode::AnyMotion => MouseProtocolMode::AnyMotion,
-    }
-}
-
-fn map_vt100_mouse_encoding(e: vt100::MouseProtocolEncoding) -> MouseProtocolEncoding {
-    match e {
-        vt100::MouseProtocolEncoding::Default => MouseProtocolEncoding::Default,
-        vt100::MouseProtocolEncoding::Utf8 => MouseProtocolEncoding::Utf8,
-        vt100::MouseProtocolEncoding::Sgr => MouseProtocolEncoding::Sgr,
-    }
 }
 
 /// Returns true for soft hyphen, Unicode `Cf` format characters (BIDI overrides/isolates,

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::hc::error::HcResult;
 use crate::hc::framed::{ChannelHandle, Frame, FrameKind, FramedClient};
-use crate::term::screen::{ScreenModel, Vt100Screen};
+use crate::term::screen::{AlacrittyScreen, ScreenModel};
 
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(50);
 
@@ -38,7 +38,7 @@ impl AttachSession {
         Self {
             terminal,
             state: SessionState::Connecting,
-            screen: Box::new(Vt100Screen::new(cols, rows, 2000)),
+            screen: Box::new(AlacrittyScreen::new(cols, rows, 2000)),
             channel: None,
             takeover_hint: false,
             resize_notifications: false,

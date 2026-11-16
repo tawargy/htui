@@ -62,10 +62,10 @@ Task 1: Add alacritty_terminal 0.26 to Cargo.toml & implement AlacrittyScreen + 
 
 ### Phase 1: `AlacrittyScreen` Implementation & Wiring
 - [x] **Task 1:** Add `alacritty_terminal = "0.26"` (`default-features = false`, update `rust-version = "1.85"`) in `Cargo.toml` and implement `AlacrittyScreen` + `NoopEventListener` + unit tests in `src/term/screen.rs`.
-- [ ] **Task 2:** Update `AttachSession::new` (`src/term/session.rs`) to construct `AlacrittyScreen`, migrate `tests/term.rs` from `Vt100Screen` to `AlacrittyScreen`, and remove `Vt100Screen` and `vt100` from `src/term/screen.rs` / `Cargo.toml`.
+- [x] **Task 2:** Update `AttachSession::new` (`src/term/session.rs`) to construct `AlacrittyScreen`, migrate `tests/term.rs` from `Vt100Screen` to `AlacrittyScreen`, and remove `Vt100Screen` and `vt100` from `src/term/screen.rs` / `Cargo.toml`.
 
 ### Checkpoint 1: Core Migration
-- [ ] `cargo check --all-targets`, `cargo test --lib`, and existing integration tests (`cargo test --test term --test ui_snapshots --test live`) pass without warnings.
+- [x] `cargo check --all-targets`, `cargo test --lib`, and existing integration tests (`cargo test --test term --test ui_snapshots --test live`) pass without warnings.
 
 ### Phase 2: Regression Coverage & Release Gate
 - [ ] **Task 3:** Add comprehensive regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` covering `REP` (`CSI Ps b`), `nvim` `SIGWINCH` redraw (`?1049h`, `?2026h/l`, `HVP`/`CNL`/`CPL`/`HPA`/`ECH`/`CHT`/`CBT`, colon-SGR `38:2::R:G:B` and `4:3`), bidirectional soft-wrap reflow, Arabic harakat, wide CJK boundary clamping, `Cf`/VS/ZWJ sanitization, scrollback, and mouse/app-cursor modes.

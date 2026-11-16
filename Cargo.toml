@@ -32,7 +32,6 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
 unicode-width = "0.2"
-vt100 = "0.15"
 
 [dev-dependencies]
 insta = "1"

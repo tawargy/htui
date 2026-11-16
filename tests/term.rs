@@ -7,14 +7,14 @@ use fake_hc::FakeHcServer;
 use herdr_tui::hc::framed::FramedClient;
 use herdr_tui::hc::rpc::RpcClient;
 use herdr_tui::hc::types::RunParams;
-use herdr_tui::term::screen::{ScreenModel, Vt100Screen};
+use herdr_tui::term::screen::{AlacrittyScreen, ScreenModel};
 use herdr_tui::term::session::{AttachSession, InputDisposition, SessionState};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 #[test]
-fn vt100_screen_arabic() {
-    let mut screen = Vt100Screen::new(40, 10, 100);
+fn alacritty_screen_arabic() {
+    let mut screen = AlacrittyScreen::new(40, 10, 100);
     // Arabic with harakat: Fatha, Damma, Kasra, Shadda, Sukun, Tanwin
     let arabic = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ — شُكْرًا";
     screen.process(arabic.as_bytes());
@@ -46,12 +46,12 @@ fn vt100_screen_arabic() {
 }
 
 #[test]
-fn vt100_screen_boundary_wide_zero_width_and_clearing_invariants() {
+fn alacritty_screen_boundary_wide_zero_width_and_clearing_invariants() {
     use unicode_width::UnicodeWidthStr;
 
     // 1. Wide character at rightmost column when area is narrower than screen,
-    //    and orphaned wide character after vt100 shrink resize.
-    let mut screen = Vt100Screen::new(10, 4, 100);
+    //    and boundary behavior after shrink resize.
+    let mut screen = AlacrittyScreen::new(10, 4, 100);
     // "abcd" (cols 0..4) + "漢" (cols 4..6) + "ef" (cols 6..8) + "字" (cols 8..10)
     screen.process("abcd漢ef字".as_bytes());
 
@@ -63,7 +63,7 @@ fn vt100_screen_boundary_wide_zero_width_and_clearing_invariants() {
     assert_eq!(col4, " ", "boundary wide char must be clamped to space");
     assert!(UnicodeWidthStr::width(col4) <= 1);
 
-    // Shrink screen to 5 cols; vt100 Row::resize may leave wide char at col 4
+    // Shrink screen to 5 cols and re-verify
     screen.resize(5, 4);
     let mut buf_shrunk = Buffer::empty(narrow_area);
     screen.render_to_buffer(narrow_area, &mut buf_shrunk);
@@ -74,7 +74,7 @@ fn vt100_screen_boundary_wide_zero_width_and_clearing_invariants() {
     );
 
     // 2. Continuation cell in buffer must be reset/empty, even if buffer had stale text
-    let mut wide_screen = Vt100Screen::new(6, 2, 100);
+    let mut wide_screen = AlacrittyScreen::new(6, 2, 100);
     wide_screen.process("漢a".as_bytes());
     let wide_area = Rect::new(0, 0, 6, 2);
     let mut stale_buf = Buffer::empty(wide_area);
@@ -104,7 +104,7 @@ fn vt100_screen_boundary_wide_zero_width_and_clearing_invariants() {
 
     // 4. Zero-width graphemes (ZWSP, FEFF, lone combining mark) normalize to " ",
     //    while Arabic harakat clusters remain intact.
-    let mut zw_screen = Vt100Screen::new(20, 3, 100);
+    let mut zw_screen = AlacrittyScreen::new(20, 3, 100);
     // Standalone ZWSP / BOM / Arabic harakat
     zw_screen.process("\u{200B}\u{FEFF}\r\nبِ لَّ شُ".as_bytes());
     let mut zw_buf = Buffer::empty(Rect::new(0, 0, 20, 3));
@@ -371,24 +371,22 @@ async fn sync_pane_sizes_resizes_session_to_wide_area_and_sends_resize() {
 }
 
 #[test]
-fn vt100_screen_exposes_mouse_protocol_modes_and_encodings() {
+fn alacritty_screen_exposes_mouse_protocol_modes_and_encodings() {
     use herdr_tui::term::screen::{MouseProtocolEncoding, MouseProtocolMode, ScreenModes};
 
     let default_modes = ScreenModes::default();
     assert_eq!(default_modes.mouse_mode, MouseProtocolMode::None);
     assert_eq!(default_modes.mouse_encoding, MouseProtocolEncoding::Default);
 
-    let mut screen = Vt100Screen::new(80, 24, 100);
+    let mut screen = AlacrittyScreen::new(80, 24, 100);
     assert_eq!(screen.modes().mouse_mode, MouseProtocolMode::None);
     assert_eq!(
         screen.modes().mouse_encoding,
         MouseProtocolEncoding::Default
     );
 
-    // DECSET ?9h -> Press, DECRST ?9l -> None
+    // Legacy X10 ?9h is intentionally ignored by alacritty_terminal
     screen.process(b"\x1b[?9h");
-    assert_eq!(screen.modes().mouse_mode, MouseProtocolMode::Press);
-    screen.process(b"\x1b[?9l");
     assert_eq!(screen.modes().mouse_mode, MouseProtocolMode::None);
 
     // DECSET ?1000h -> PressRelease, DECRST ?1000l -> None
@@ -831,7 +829,7 @@ async fn observing_frame_resize_vs_size_event_and_control_char_sanitization() {
     sess.handle_frame(Frame::resize(1, 96, 28));
     assert_eq!(sess.screen.size(), (96, 28));
 
-    // Control characters inside screen bytes never leak into Vt100Screen::cell
+    // Control characters inside screen bytes never leak into AlacrittyScreen::cell
     sess.handle_frame(Frame::data(1, b"ok\x00\x07\x1b[0mend".to_vec()));
     for col in 0..10 {
         let cell = sess.screen.cell(0, col).expect("cell");
@@ -865,10 +863,10 @@ async fn observing_frame_resize_vs_size_event_and_control_char_sanitization() {
 }
 
 #[test]
-fn vt100_screen_format_vs_and_zwj_sanitization() {
+fn alacritty_screen_format_vs_and_zwj_sanitization() {
     use unicode_width::UnicodeWidthStr;
 
-    let mut screen = Vt100Screen::new(30, 5, 100);
+    let mut screen = AlacrittyScreen::new(30, 5, 100);
     // Row 0: VS16 warning sign followed immediately by 'X', plus ZWJ family emoji followed by 'Y'
     screen.process("\u{26A0}\u{FE0F}X \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}Y".as_bytes());
     screen.process(b"\r\n");
@@ -951,11 +949,11 @@ impl std::io::Write for SharedVecWriter {
 }
 
 #[test]
-fn vt100_screen_sanitization_end_to_end_with_sync_backend() {
+fn alacritty_screen_sanitization_end_to_end_with_sync_backend() {
     use herdr_tui::ui::backend::SyncCrosstermBackend;
     use ratatui::{Terminal, TerminalOptions, Viewport};
 
-    let mut screen = Vt100Screen::new(30, 4, 100);
+    let mut screen = AlacrittyScreen::new(30, 4, 100);
     // Row 0: ⚠️ followed by 'X', then ASCII run "HELLO", then divider '│' and 'Z'
     screen.process("\u{26A0}\u{FE0F}XHELLO│Z".as_bytes());
     screen.process(b"\r\n");

@@ -32,13 +32,13 @@ Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/
 **Description:** Update `AttachSession::new` in `src/term/session.rs` to construct `AlacrittyScreen::new(cols, rows, 2000)`. Migrate all `Vt100Screen` usages in `tests/term.rs` to `AlacrittyScreen` (updating the mouse protocol test in `tests/term.rs` for `alacritty_terminal`'s modern `?1000h`/`?1002h`/`?1003h`/`?1005h`/`?1006h` support, noting legacy X10 `?9h` is not emitted by `alacritty_terminal`). Remove `Vt100Screen` and its `vt100` helpers from `src/term/screen.rs`, and remove `vt100 = "0.15"` from `Cargo.toml` (refreshing `Cargo.lock`).
 
 **Acceptance criteria:**
-- [ ] `AttachSession::new` constructs `AlacrittyScreen` and no production or test code references `vt100` or `Vt100Screen`.
-- [ ] `vt100` is removed from `Cargo.toml` and `Cargo.lock`.
-- [ ] All existing tests in `--lib`, `tests/term.rs`, `tests/ui_snapshots.rs`, and `tests/live.rs` pass.
+- [x] `AttachSession::new` constructs `AlacrittyScreen` and no production or test code references `vt100` or `Vt100Screen`.
+- [x] `vt100` is removed from `Cargo.toml` and `Cargo.lock`.
+- [x] All existing tests in `--lib`, `tests/term.rs`, `tests/ui_snapshots.rs`, and `tests/live.rs` pass.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib && cargo test --test term --test ui_snapshots --test live`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib && cargo test --test term --test ui_snapshots --test live`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
@@ -54,9 +54,9 @@ Include focused unit tests in `src/term/screen.rs` verifying `REP`, `HVP`/`CNL`/
 ---
 
 ## Checkpoint: After Tasks 1-2
-- [ ] `cargo check --all-targets` passes with zero warnings
-- [ ] `cargo test --lib` and `cargo test --test term --test ui_snapshots --test live` pass
-- [ ] `vt100` completely removed from `Cargo.toml` and `Cargo.lock`
+- [x] `cargo check --all-targets` passes with zero warnings
+- [x] `cargo test --lib` and `cargo test --test term --test ui_snapshots --test live` pass
+- [x] `vt100` completely removed from `Cargo.toml` and `Cargo.lock`
 
 ---
 
