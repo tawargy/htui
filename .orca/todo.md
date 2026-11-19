@@ -123,17 +123,17 @@ Add focused unit/client tests in `src/ui/app.rs` and `tests/hc_client.rs` (plus 
 **Description:** Run the full workspace test suite, formatter check, and strict clippy lints across all targets, reinstall `htui` locally with `cargo install --path . --locked`, and run an isolated live `hc` (`HC_SESSION=...`) + `nvim +19 Cargo.toml` + `htui` PTY verification covering: (1) shrinking `166x42 -> 84x33`, moving cursor (`j`), and growing `84x33 -> 110x33` inside `nvim`; (2) attaching `htui` to an already-running `hc run nvim +19 Cargo.toml` (`200x120`); (3) splitting `[+H]` with `zsh` beside `nvim` and resizing; and (4) quitting `nvim` (`:q!`) and resizing `zsh` to verify zero `8;...t` leakage into the shell prompt.
 
 **Acceptance criteria:**
-- [ ] `cargo test` passes with zero failures or skipped assertions.
-- [ ] `cargo fmt --all -- --check` passes with zero formatting diffs.
-- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
-- [ ] `cargo install --path . --locked` succeeds and the reinstalled `htui` binary passes the isolated live `hc` + `nvim` PTY resize, attach, split, and exit checks.
+- [x] `cargo test` passes with zero failures or skipped assertions.
+- [x] `cargo fmt --all -- --check` passes with zero formatting diffs.
+- [x] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [x] `cargo install --path . --locked` succeeds and the reinstalled `htui` binary passes the isolated live `hc` + `nvim` PTY resize, attach, split, and exit checks.
 
 **Verification:**
-- [ ] `cargo test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo install --path . --locked`
-- [ ] Isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY check confirms crisp full-width rendering on resize/attach/split and clean `zsh` post-exit resize
+- [x] `cargo test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --all-targets -- -D warnings`
+- [x] `cargo install --path . --locked`
+- [x] Isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY check confirms crisp full-width rendering on resize/attach/split and clean `zsh` post-exit resize
 
 **Dependencies:** Task 4
 
@@ -145,6 +145,6 @@ Add focused unit/client tests in `src/ui/app.rs` and `tests/hc_client.rs` (plus 
 ---
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [ ] Reinstalled `htui` binary verified clean against live `hc` + `nvim`
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] Reinstalled `htui` binary verified clean against live `hc` + `nvim`

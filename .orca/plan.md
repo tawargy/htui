@@ -82,12 +82,12 @@ Task 1: Track DECSET 2048 (in_band_resize) in AlacrittyScreen & ScreenModes
 - [x] `cargo test` passes across all workspace tests.
 
 ### Phase 3: Full Quality Gate & Live `nvim` Verification
-- [ ] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and run isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY resize, attach, split, and `:q!` -> `zsh` verification.
+- [x] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and run isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY resize, attach, split, and `:q!` -> `zsh` verification.
 
 ### Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass cleanly
-- [ ] Reinstalled `htui` verified clean on live `nvim` resize, split, attach, and exit
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass cleanly
+- [x] Reinstalled `htui` verified clean on live `nvim` resize, split, attach, and exit
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |
