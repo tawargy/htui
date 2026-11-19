@@ -28,6 +28,8 @@ use crate::ui::sidebar::{render_sidebar, SidebarItem, SidebarPanel, SidebarState
 use crate::ui::statusbar::render_statusbar;
 use crate::ui::tabs::{render_tab_bar, TabHitbox};
 
+pub const OUTER_RESIZE_SETTLE: Duration = Duration::from_millis(120);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
     None,
@@ -86,6 +88,7 @@ pub struct TuiApp {
     pub should_quit: bool,
     pub connected: bool,
     pub dirty: bool,
+    outer_resize_settle_at: Option<Instant>,
 }
 
 impl TuiApp {
@@ -123,6 +126,28 @@ impl TuiApp {
             should_quit: false,
             connected: true,
             dirty: true,
+            outer_resize_settle_at: None,
+        }
+    }
+
+    pub fn mark_outer_resize(&mut self, now: Instant) {
+        self.outer_resize_settle_at = Some(now + OUTER_RESIZE_SETTLE);
+    }
+
+    pub fn clear_outer_resize_settle(&mut self) {
+        self.outer_resize_settle_at = None;
+    }
+
+    pub fn has_pending_outer_resize(&self) -> bool {
+        self.outer_resize_settle_at.is_some()
+    }
+
+    pub fn take_settled_outer_resize(&mut self, now: Instant) -> bool {
+        if self.outer_resize_settle_at.is_some_and(|at| now >= at) {
+            self.outer_resize_settle_at = None;
+            true
+        } else {
+            false
         }
     }
 
@@ -831,6 +856,7 @@ impl TuiApp {
                 self.dirty = true;
             }
             MouseAction::EndDrag => {
+                self.clear_outer_resize_settle();
                 let mut flushed = false;
                 for sess in self.sessions.values_mut() {
                     if sess.state == SessionState::Active {
@@ -950,6 +976,7 @@ impl TuiApp {
     fn apply_command(&mut self, cmd: Command, now: Instant, actions: &mut Vec<AppAction>) {
         match cmd {
             Command::SplitHorizontal | Command::SplitVertical => {
+                self.clear_outer_resize_settle();
                 let axis = if cmd == Command::SplitHorizontal {
                     SplitAxis::Horizontal
                 } else {
@@ -963,6 +990,7 @@ impl TuiApp {
                 }
             }
             Command::ClosePane => {
+                self.clear_outer_resize_settle();
                 if let Some(pid) = self.focused_pane {
                     self.close_focused_pane(pid, now, actions);
                 }
@@ -1031,6 +1059,7 @@ impl TuiApp {
                 }
             }
             Command::ToggleSidebar => {
+                self.clear_outer_resize_settle();
                 self.sidebar_visible = !self.sidebar_visible;
                 if !self.sidebar_visible {
                     self.sidebar_focused = false;
@@ -1891,5 +1920,81 @@ mod tests {
             pane_id: api_pane,
             terminal: "t-api".into(),
         }));
+    }
+
+    #[test]
+    fn outer_resize_settle_coalesces_trailing_edge_and_clears_on_layout_commands() {
+        let mut app = TuiApp::new(Config::default(), Some("api".into()));
+        assert!(!app.has_pending_outer_resize());
+
+        let t0 = Instant::now();
+        app.mark_outer_resize(t0);
+        assert!(app.has_pending_outer_resize());
+        assert!(!app.take_settled_outer_resize(t0 + Duration::from_millis(119)));
+        assert!(app.has_pending_outer_resize());
+
+        // Subsequent outer resize pushes deadline out (trailing-edge coalesce)
+        app.mark_outer_resize(t0 + Duration::from_millis(50));
+        assert!(!app.take_settled_outer_resize(t0 + OUTER_RESIZE_SETTLE));
+        assert!(app.take_settled_outer_resize(t0 + Duration::from_millis(50) + OUTER_RESIZE_SETTLE));
+        assert!(!app.has_pending_outer_resize());
+
+        // Layout-mutating commands clear pending outer resize settle state immediately
+        let ctrl_b = KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL);
+        for key_char in ['"', '%', 'b', 'x'] {
+            app.mark_outer_resize(t0);
+            assert!(app.has_pending_outer_resize());
+            app.handle_key(ctrl_b, t0);
+            app.handle_key(
+                KeyEvent::new(KeyCode::Char(key_char), KeyModifiers::NONE),
+                t0 + Duration::from_millis(10),
+            );
+            assert!(
+                !app.has_pending_outer_resize(),
+                "expected Ctrl-b {key_char} to clear outer_resize_settle_at"
+            );
+        }
+
+        // EndDrag clears pending outer resize settle state
+        app.mark_outer_resize(t0);
+        assert!(app.has_pending_outer_resize());
+        app.handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+            t0,
+        );
+        // Note: Up without active divider drag returns None; simulate active divider drag then Up
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        let p1 = app.focused_pane.unwrap();
+        app.current_tree_mut()
+            .split(p1, SplitAxis::Horizontal, None);
+        app.render(area, &mut buf, t0);
+        let divider = app.last_geom.dividers[0];
+        app.handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: divider.line_pos,
+                row: divider.container.y + 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            t0,
+        );
+        app.mark_outer_resize(t0);
+        assert!(app.has_pending_outer_resize());
+        app.handle_mouse_event(
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: divider.line_pos,
+                row: divider.container.y + 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            t0 + Duration::from_millis(5),
+        );
+        assert!(!app.has_pending_outer_resize());
     }
 }

@@ -61,13 +61,13 @@
 Add focused unit/integration tests for pre-resize frame draining and `TuiApp` outer resize settle behavior.
 
 **Acceptance criteria:**
-- [ ] Buffered old-width `DATA` frames in `AttachSession::channel` are drained and processed at the old screen dimensions before `request_resize` or `flush_pending_resize` applies `self.screen.resize`.
-- [ ] Rapid `Event::Resize` events redraw `htui` chrome immediately (`app.dirty = true`) while deferring `sync_pane_sizes` until `OUTER_RESIZE_SETTLE` elapses after the final `Event::Resize`, without delaying startup sizing, `SplitHorizontal`/`SplitVertical`/`ClosePane`/`ToggleSidebar`, `Spawn`, `TakeOver`, or `DragDivider`/`EndDrag`.
-- [ ] `tick.tick()` drains incoming frames before flushing any pending resize.
+- [x] Buffered old-width `DATA` frames in `AttachSession::channel` are drained and processed at the old screen dimensions before `request_resize` or `flush_pending_resize` applies `self.screen.resize`.
+- [x] Rapid `Event::Resize` events redraw `htui` chrome immediately (`app.dirty = true`) while deferring `sync_pane_sizes` until `OUTER_RESIZE_SETTLE` elapses after the final `Event::Resize`, without delaying startup sizing, `SplitHorizontal`/`SplitVertical`/`ClosePane`/`ToggleSidebar`, `Spawn`, `TakeOver`, or `DragDivider`/`EndDrag`.
+- [x] `tick.tick()` drains incoming frames before flushing any pending resize.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib && cargo test --test term`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib && cargo test --test term`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 2
 

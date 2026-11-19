@@ -138,6 +138,7 @@ impl AttachSession {
     }
 
     pub fn request_resize(&mut self, cols: u16, rows: u16, now: Instant) -> HcResult<bool> {
+        self.drain_frames();
         let cols = cols.max(1);
         let rows = rows.max(1);
         if self.state != SessionState::Active {
@@ -179,6 +180,7 @@ impl AttachSession {
         now: Instant,
         ignore_debounce: bool,
     ) -> HcResult<bool> {
+        self.drain_frames();
         let Some((cols, rows)) = self.pending_resize else {
             return Ok(false);
         };

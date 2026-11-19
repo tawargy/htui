@@ -1177,3 +1177,62 @@ fn alacritty_screen_scrollback_modes_and_wide_cjk_invariants() {
     assert_eq!(screen.cell(0, 3).unwrap().symbol, "a");
     assert_eq!(screen.cell(0, 4).unwrap().symbol, "b");
 }
+
+#[tokio::test]
+async fn attach_session_drains_buffered_old_width_frames_before_resize() {
+    use fake_hc::make_terminal;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    srv.add_terminal(make_terminal("t-drain", "zsh")).await;
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    let mut session = AttachSession::new("t-drain".to_string(), 80, 10);
+    session.attach_active(&framed).await.expect("attach");
+    let channel = session.channel.as_ref().unwrap().channel;
+
+    // 1. Queued 80-col DATA frame must be processed at 80 cols before request_resize shrinks to 40
+    srv.send_attach_data(
+        channel,
+        b"htui (main) > \x1b[63C \xE2\x9C\x93 \x1b[65D".to_vec(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let t0 = Instant::now();
+    assert!(session.request_resize(40, 10, t0).expect("request_resize"));
+    assert_eq!(session.screen.size(), (40, 10));
+    // Drain again (simulating tick): nothing old-width should remain to corrupt the 40-col screen
+    session.drain_frames();
+    assert_eq!(session.screen.row_text(0), "htui (main) >");
+    assert_eq!(
+        session.screen.cursor(),
+        (14, 0, true),
+        "old-width frame must have been processed before request_resize shrank screen"
+    );
+
+    // 2. Same check for flush_pending_resize when debounced
+    assert!(!session
+        .request_resize(60, 10, t0 + Duration::from_millis(5))
+        .expect("debounced"));
+    // Send a 40-col frame while screen is still 40x10 and resize to 60x10 is pending
+    srv.send_attach_data(
+        channel,
+        b"\r\x1b[Jhtui (main) > \x1b[23C \xE2\x9C\x93 \x1b[25D".to_vec(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert!(session
+        .flush_pending_resize(t0 + Duration::from_millis(60))
+        .expect("flush_pending_resize"));
+    assert_eq!(session.screen.size(), (60, 10));
+    session.drain_frames();
+    assert_eq!(
+        session.screen.row_text(0),
+        "htui (main) >                         \u{2713}"
+    );
+    assert_eq!(session.screen.row_text(1), "");
+    assert_eq!(session.screen.cursor(), (14, 0, true));
+}

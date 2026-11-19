@@ -68,7 +68,7 @@ Task 1: Clear stale WRAPLINE on erase-from-col-0 in AlacrittyScreen::process
 - [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
 
 ### Phase 2: Session Frame-Drain Ordering & Outer `Event::Resize` Settle
-- [ ] **Task 3:** Drain `ch.rx` frames before resize in `AttachSession` (`src/term/session.rs`), add trailing-edge `OUTER_RESIZE_SETTLE` coordination in `TuiApp` (`src/ui/app.rs`) and `run_tui_loop` (`src/ui/event_loop.rs`), and add unit/integration tests.
+- [x] **Task 3:** Drain `ch.rx` frames before resize in `AttachSession` (`src/term/session.rs`), add trailing-edge `OUTER_RESIZE_SETTLE` coordination in `TuiApp` (`src/ui/app.rs`) and `run_tui_loop` (`src/ui/event_loop.rs`), and add unit/integration tests.
 - [ ] **Task 4:** Add end-to-end `zsh` prompt + `RPROMPT` (`✓`) shrink/grow and side-by-side `Event::Resize` storm regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
 
 ### Checkpoint: After Tasks 3–4

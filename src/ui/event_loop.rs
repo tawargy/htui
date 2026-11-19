@@ -196,13 +196,23 @@ async fn run_tui_loop(
                     f.set_cursor_position((cx, cy));
                 }
             })?;
-            app.sync_pane_sizes(now);
+            if !app.has_pending_outer_resize() {
+                app.sync_pane_sizes(now);
+            }
         }
 
         tokio::select! {
             _ = tick.tick() => {
                 let now = Instant::now();
                 app.router.tick(now);
+                for sess in app.sessions.values_mut() {
+                    if sess.drain_frames() {
+                        app.dirty = true;
+                    }
+                }
+                if app.take_settled_outer_resize(now) {
+                    app.sync_pane_sizes(now);
+                }
                 for sess in app.sessions.values_mut() {
                     if let Ok(true) = sess.flush_pending_resize(now) {
                         app.dirty = true;
@@ -215,6 +225,7 @@ async fn run_tui_loop(
                     Ok(Event::Key(k)) => app.handle_key(k, now),
                     Ok(Event::Mouse(m)) => app.handle_mouse_event(m, now),
                     Ok(Event::Resize(_, _)) => {
+                        app.mark_outer_resize(now);
                         app.dirty = true;
                         Vec::new()
                     }
@@ -573,6 +584,7 @@ pub async fn dispatch_action(
             attach_terminal_in_pane(pane_id, terminal, app, framed).await;
         }
         AppAction::TakeOver(terminal) => {
+            app.clear_outer_resize_settle();
             if let Some(fc) = framed {
                 let target_size = app
                     .current_tree()
@@ -648,6 +660,7 @@ pub async fn dispatch_action(
                         app.place_spawned_terminal(&addr, effective_target);
                         app.sidebar_focused = false;
                         app.refresh_sidebar();
+                        app.clear_outer_resize_settle();
                         app.sync_pane_sizes(now);
                         if let Some(fc) = framed {
                             let (cols, rows) = app
