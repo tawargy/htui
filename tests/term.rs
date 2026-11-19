@@ -1533,8 +1533,11 @@ fn nvim_cargo_toml_frame(cols: u16, rows: u16) -> Vec<u8> {
     // Kanagawa Wave background #1f1f28, clear entire alt screen cleanly
     out.push_str("\x1b[?2026h\x1b[48;2;31;31;40m\x1b[38;2;220;215;186m\x1b[2J");
     // Row 1: bufferline across full width
-    let bufline = format!("{:<width$}", "  Cargo.toml  ×", width = cols_usize);
-    out.push_str(&format!("\x1b[1;1H{}", &bufline[..cols_usize]));
+    let bufline: String = format!("{:<width$}", "  Cargo.toml  ×", width = cols_usize)
+        .chars()
+        .take(cols_usize)
+        .collect();
+    out.push_str(&format!("\x1b[1;1H{bufline}"));
     // Content rows 2..(rows-1): numbered lines 9.. with line 19 inline git-blame & colorcolumn=120 marker
     let content_rows = rows_usize.saturating_sub(2);
     for idx in 0..content_rows {

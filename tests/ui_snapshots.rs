@@ -5628,7 +5628,7 @@ async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backe
         ));
     assert!(app.sessions[&t1_addr].screen.modes().in_band_resize);
 
-    // 2. Outer resize storm 166x42 -> 120x36 -> 84x33, settle & sync_pane_sizes
+    // 2. Outer resize storm 166x42 -> 84x33 (coalesced across storm ticks), settle & sync_pane_sizes
     let shrink_area = Rect::new(0, 0, 84, 33);
     term.resize(shrink_area).unwrap();
     let storm_t = t0 + Duration::from_millis(100);
@@ -5815,6 +5815,16 @@ async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backe
             Color::Rgb(31, 31, 40)
         );
     }
+    let final_lualine_y = p1_rect.y + p1_rect.height - 2;
+    let final_lualine_row: String = ((p1_rect.x + 1)..(p1_rect.x + p1_rect.width - 1))
+        .map(|x| final_buf.cell((x, final_lualine_y)).unwrap().symbol())
+        .collect();
+    let final_above_row: String = ((p1_rect.x + 1)..(p1_rect.x + p1_rect.width - 1))
+        .map(|x| final_buf.cell((x, final_lualine_y - 1)).unwrap().symbol())
+        .collect();
+    assert!(final_lualine_row.contains("NORMAL"));
+    assert!(final_lualine_row.contains("19:1"));
+    assert!(!final_above_row.contains("NORMAL"));
 
     // Verify CSI 48 emitted for nvim settled/split/drag widths and NEVER for zsh
     tokio::time::sleep(Duration::from_millis(30)).await;
