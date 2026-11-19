@@ -1,102 +1,83 @@
-# Implementation Plan: Fix `nvim` Rendering & Resize Corruption in `htui`
+# Implementation Plan: Add Comprehensive Root `README.md` for `htui` (`herdr-tui`)
 
 ## Overview
-When running `nvim` (`v0.12.5`) inside `htui` (`hc 0.1.21`), outer window resizes, pane splits, or re-attaching at a new pane width cause severe visual corruption inside the `nvim` pane while `htui` borders and sibling `zsh` panes remain intact. As seen in [Screenshot From 2026-11-19 13-31-49.png](file:///home/tawargy/Documents/0-WorkSpace/1-SideProjects/htui/Screenshot%20From%202026-11-19%2013-31-49.png), untouched `Cargo.toml` buffer lines and `bufferline` remain truncated at ~52 columns with `Color::Reset` (`#282a36`) across columns 52–77, while updated lines (`9`, `19` with inline git-blame, `27`, `34`) and `lualine` draw at a stale `>= 126`-column width into the 78-column `AlacrittyScreen`, wrapping and overwriting lines `10`, `20`, `28`, and `35` (placing `colorcolumn=120` at col `125 - 78 = 47`) and splitting `lualine` across two rows.
+Create a comprehensive, source-verified `README.md` at the repository root documenting `htui` (`herdr-tui`), a keyboard-driven terminal multiplexer and client for `herdr-core` (`hc`). Because `README.md` currently does not exist, users and contributors lack a single entry point explaining installation, `hc` daemon discovery/auto-start, CLI subcommands and exit codes, TOML configuration and `htui.layout` persistence, spaces/panels/split-pane workflows, `Ctrl+B` keybindings, SGR mouse passthrough/selection/clipboard behavior, terminal emulation guarantees (Arabic/grapheme safety, `SyncCrosstermBackend`, DEC Mode 2048), and testing workflows. Every documented fact will be strictly verified against the current Rust source, `Cargo.toml`, and `docs/protocol-notes.md`.
 
-Empirical probing against live `nvim v0.12.5`, `hc 0.1.21`, and `/home/tawargy/.cargo/bin/htui` established the exact mechanism: `hc`'s embedded `libghostty-vt` answers `nvim`'s `DECRQM` Mode 2048 query (`\x1b[?2048$p`) with `\x1b[?2048;2$y`, causing `nvim` to enable DEC Private Mode 2048 (`\x1b[?2048h` — In-Band Window Resize Notifications) and ignore `SIGWINCH`. Because `hc 0.1.21` only updates `TIOCSWINSZ`/`SIGWINCH` on `FrameKind::Resize` and `terminal.attach` without sending `CSI 48 ; rows ; cols ; 0 ; 0 t`, `nvim` never learns the new pane size. Fixing this requires tracking Mode 2048 in `AlacrittyScreen`, emitting `CSI 48 ; rows ; cols ; 0 ; 0 t` from `AttachSession` on active resizes/attaches/takeovers while Mode 2048 is active, and sizing initial startup attaches and `RunParams` spawns cleanly.
+---
 
-## Root-Cause Summary
+## Architecture & Content Decisions
 
-| Area | Symptom | Exact Mechanism (Empirically Verified) |
+1. **Source Code Is the Single Source of Truth (Ignore Stale Draft Specs):**
+   - *Rationale:* `.orca/SPEC.md` reflects earlier design drafts (such as `vt100`/`tui-term` and unconditional `observe: true` initial attach) that were superseded by later implementations (`alacritty_terminal`, isolated multi-panel workspaces, `AttachMode`, DEC Mode 2048, and `SyncCrosstermBackend`). All CLI flags, defaults, keybindings, glyphs, env vars, and behaviors in `README.md` must match `src/`, `Cargo.toml`, and `docs/protocol-notes.md` verbatim.
+2. **Accurate, Non-Overclaiming Documentation of `AttachMode` and `Apache-2.0` License:**
+   - *Rationale:* `src/config.rs` defines `attach.mode` (`"auto"` | `"active"` | `"observe"`, default `"auto"`), while `src/ui/event_loop.rs` currently attaches panes in observing mode when `mode == "observe"` and active mode otherwise (with `[Take over]` / `Ctrl+B t` promoting observing panes). Similarly, `Cargo.toml` specifies `license = "Apache-2.0"` without a separate root `LICENSE` file. `README.md` must describe both faithfully without inventing nonexistent files or unimplemented behaviors.
+3. **Structured Reference Layout for Both Users and Contributors:**
+   - *Rationale:* Organize `README.md` top-down from user onboarding (Overview + ASCII layout diagram → Prerequisites & Installation → Quick Start → CLI Reference & Exit Codes → Socket Discovery, Auto-Start & Configuration) into interactive operation (Spaces, Panels & Agents → Observing vs Active Takeover → Keybindings → Mouse, Scrollback & Clipboard → Modal Dialogs) and technical reference (Terminal Emulation & Rendering Highlights → Architecture & Project Layout → Development & Testing → License).
+4. **Zero Broken Links & Verifiable Cross-Checks:**
+   - *Rationale:* Only link to repository files verified to exist (`docs/protocol-notes.md`, `Cargo.toml`), and require an explicit source-vs-README verification checklist before completion alongside standard Rust quality gates (`cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`).
+
+---
+
+## Verified Source-of-Truth Inventory
+
+| `README.md` Topic | Authoritative Source Files | Verified Facts to Document |
 |---|---|---|
-| Mode 2048 (`?2048h`) ignored (`src/term/screen.rs`, `src/term/session.rs`, `hc 0.1.21`) | `nvim` stays frozen at old width (`~130` or `200x120`) after outer resize, `[+H]`/`[+V]` split, divider drag, or attach/take-over; `AlacrittyScreen` `ALT_SCREEN` crops to `52` cols then pads `52..77` with `Color::Reset`, while subsequent `nvim` line/statusline redraws at old width wrap over adjacent lines | `hc 0.1.21` replies `\x1b[?2048;2$y` to `\x1b[?2048$p`. `nvim` sends `\x1b[?1049h...\x1b[?2048h` and stops handling `SIGWINCH` (`FrameKind::Resize`, `hc attach` `TIOCSWINSZ`, and direct `kill -WINCH` all produce `0` bytes from `nvim`). `hc` never emits `CSI 48 ; rows ; cols ; ... t` on `FrameKind::Resize` or `terminal.attach`. `vte 0.15.0` parses `2048` as `PrivateMode::Unknown(2048)` which `alacritty_terminal 0.26.0` ignores. Sending `\x1b[48;{rows};{cols};0;0t` immediately triggers a full clean `nvim` redraw (`9407`–`14032` bytes). |
-| Unsafe if emitted when `?2048h` is off (`src/term/session.rs`, `src/term/screen.rs`) | Blindly sending `CSI 48` to `zsh` injects `8;rows;cols;0;0t` into the shell line editor | Live test confirmed `zsh` ZLE rings BEL and inserts `8;24;80;0;0t` literally at the prompt. `in_band_resize` must be strictly tracked per screen (`?2048h` / `?2048l` / `RIS` / alt-screen exit) and only sent while `SessionState::Active`. |
-| Duplicate query replies hazard (`src/term/screen.rs`) | Forwarding `NoopEventListener` `Event::PtyWrite` (`DA1`/`DSR`/`6n`) would corrupt `nvim` input | `hc` already intercepts and answers `\x1b[c`, `\x1b[>q`, `\x1b[18t`, `\x1b[?u`, `\x1b[5n`, `\x1b[6n`, `OSC 10/11`, and `DECRQM` between the PTY and `libghostty-vt`. `AlacrittyScreen` must keep `NoopEventListener` for `PtyWrite` and only synthesize `CSI 48` when Mode 2048 is active. |
-| Startup `(80, 24)` bounce & `200x120` spawn (`src/ui/event_loop.rs`, `src/hc/types.rs`, `src/ui/app.rs`) | Initial attach forces `(80, 24)` before first draw; spawned TUIs launch at `200x120` | `run_tui_loop` runs `attach_active_panel_terminals` while `app.last_panes_area` is `0x0` (`pane_inner_size` falls back to `(80, 24)`). `AppAction::Spawn` calls `terminal_run` without `RunParams.size` (`InitialSize`), starting commands at `200x120`. |
+| Package, MSRV, License | `Cargo.toml` | Package `herdr-tui` v`0.1.0` (`edition = "2021"`), lib `herdr_tui`, bin `htui`, MSRV `1.85`, `license = "Apache-2.0"`. |
+| CLI & Exit Codes | `src/main.rs`, `src/cli/mod.rs`, `ls.rs`, `status.rs`, `events.rs`, `open.rs`, `tests/cli.rs` | Global `--socket <SOCKET>`; `ls [--json] [--all] [--space <SPACE>] [--label <K=V>]...`, `status [--json]`, `events [--json]`, `open <SPACE> [--create]`. Exit codes: `0` OK / clean `BrokenPipe`, `1` RPC/I/O/TUI error, `2` malformed `--label` or CLI parse error, `3` unreachable socket, `4` missing space on `open` without `--create`. |
+| Socket & `hc` Auto-Start | `src/hc/transport.rs`, `docs/protocol-notes.md` | Precedence: `--socket` → `HTUI_HC_SOCKET` → `config.hc.socket` → `$XDG_RUNTIME_DIR/herdr-core/${HC_SESSION:-default}.sock` (Linux fallback `/run/user/<uid>/herdr-core/<session>.sock` or `/tmp/herdr-core-<uid>/<session>.sock`; generic fallback `<temp_dir>/herdr-core/<session>.sock`). Env vars: `HTUI_HC_SOCKET`, `HC_SESSION`, `HTUI_HC_BIN` (default `"hc"`), `SHELL`. Auto-start runs `<HTUI_HC_BIN> server start` with null stdio (50 ms poll, 5 s timeout) only on interactive startup (`htui` / `htui open`) and skips custom sockets. Verified against `hc 0.1.21` (protocol gen `1`, OpenRPC `1.3.2`). |
+| Configuration & Layout Store | `src/config.rs`, `src/layout/store.rs`, `src/ui/event_loop.rs` | Config file: `~/.config/herdr-tui/config.toml` (`$XDG_CONFIG_HOME/herdr-tui/config.toml`). Defaults: `[hc]` `socket = None`; `[ui]` `show_finished = true`, `show_unassigned = true`, `prefix_timeout_ms = 1500`, `sidebar_width = 30`; `[attach]` `mode = "auto"` (`"auto"` \| `"active"` \| `"observe"`). Layout stored in `hc` doc `htui.layout` (`doc.get`/`doc.set`, CAS max 3 retries) with mirror/fallback at `~/.config/herdr-tui/layout.json` (or `/tmp/htui-layout.json`). |
+| Workspaces, Agents & Takeover | `src/model/tree.rs`, `src/layout/panel.rs`, `src/ui/sidebar.rs`, `src/ui/tabs.rs`, `src/ui/panes.rs`, `src/ui/theme.rs`, `src/term/session.rs` | Spaces (`(unassigned)` fallback), isolated Panels (tab pills with `(+N)`), `SplitTree` panes. Agent detection: `template`, `reported`, `status`, or known bins (`agy`, `claude`, `codex`, `opencode`, `gemini`, `aider`, `goose`, `cursor`, `pi`). Priority-sorted Agents panel. Status glyphs: `◐` Working, `⚠` Blocked, `✖` Error, `✔` Done, `●` Idle, `◈` Other, `·` Live (no status), `○` Finished. `[observing]` vs Active modes with `[Take over]` button (`Ctrl+B t`). Kanagawa Wave theme. |
+| Keybindings & Dialogs | `src/ui/keymap.rs`, `src/ui/app.rs`, `src/ui/dialogs/` | `Ctrl+B` prefix (`1500` ms default, `[PREFIX]` indicator) with all 17 bindings + aliases (`%`/`\|`, `"`/`-`, `H`, `V`, `[`, `]`, `x`/`q`, `h`/`j`/`k`/`l`/arrows, `t`, `n`, `c`, `K`, `R`, `r`, `b`, `Tab`, `?`, `d`). `Ctrl+Shift+C` copy selection. Sidebar nav (`Up`/`k`, `Down`/`j`, `Left`/`Right`, `Tab`, `Enter`, `Esc`). Modals: Spawn (templates / `$SHELL` / `sh`, Command/Template, Task, Space, predicted `InitialSize`), New Space, Rename Space, Confirm Kill/Remove, Help. |
+| Mouse, Scrollback & Clipboard | `src/ui/mouse.rs`, `src/term/mouse.rs`, `src/ui/selection.rs`, `src/ui/clipboard.rs`, `src/ui/tabs.rs`, `src/ui/panes.rs` | Tab clicks (`[+H]`, `[+V]`, `[+ New Terminal]`, panel/unattached pills), sidebar row clicks, split divider left-drag (`±1` cell tolerance, `0.1..=0.9` ratio, `50` ms debounce, immediate flush + layout save on release), `[Take over]` & `[+ New Terminal (Ctrl+B n)]` clicks, child mouse passthrough (X10, UTF-8 `?1005`, SGR `?1006`; `Shift` bypasses passthrough), wheel scrollback (`±3` lines), drag-select auto-copy via OSC 52 + `wl-copy` / `xclip` / `xsel`. |
+| Terminal Emulation & Resize | `src/term/screen.rs`, `src/term/session.rs`, `src/ui/backend.rs`, `src/ui/event_loop.rs` | `alacritty_terminal 0.26` (`2000`-line scrollback), truecolor RGB & colon-SGR, UTF-8 grapheme cluster preservation (Arabic harakat/combining marks) + `Cf`/variation-selector sanitization, `SyncCrosstermBackend` (`\x1b[?2026h`/`l` Synchronized Output + post-non-ASCII `MoveTo`), DEC Mode 2048 (`?2048h`/`?2048l` per-screen tracking, `\x1b[48;{rows};{cols};0;0t` emission when `Active`), `120` ms outer resize settle, startup `last_panes_area` priming, `RunParams.size` (`InitialSize`), primary shrink scrollback reclaim. |
+| Tests & Protocol Docs | `tests/`, `docs/protocol-notes.md` | `cargo test` (`cli`, `hc_client`, `layout`, `model`, `term`, `ui_snapshots`, `live`), `HTUI_LIVE_HC=1 cargo test --test live`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`. |
 
-## Architecture Decisions
-
-1. **Track DECSET 2048 per screen (`primary` vs `alt`) in `AlacrittyScreen` (`src/term/screen.rs`):**
-   - Add `pub in_band_resize: bool` to `ScreenModes` (default `false`).
-   - Add `in_band_resize_primary: bool` and `in_band_resize_alt: bool` on `AlacrittyScreen`, passed into `ClearWrapHandler` in `AlacrittyScreen::process`.
-   - Intercept `set_private_mode`, `unset_private_mode`, and `reset_state` in `ClearWrapHandler`:
-     - `PrivateMode::Unknown(2048)` on `set_private_mode` sets `in_band_resize_alt` when `TermMode::ALT_SCREEN` is active, else `in_band_resize_primary`.
-     - `PrivateMode::Unknown(2048)` on `unset_private_mode` clears the active screen's flag (and if `ALT_SCREEN` is active and `!in_band_resize_primary`, keeps primary false; note `nvim` emits `\x1b[?2048l` before `\x1b[?1049l` on both `:q!` and `Ctrl+Z`, and `hc` snapshots reset `\x1b[?2048l` before `\x1b[?1049l`).
-     - `NamedPrivateMode::SwapScreenAndSetRestoreCursor` on `unset_private_mode` (leaving `ALT_SCREEN`) clears `in_band_resize_alt = false` so a crashed/unclean alt-screen exit cannot leak Mode 2048 back onto `zsh`, while preserving `in_band_resize_primary` for primary-screen Mode 2048 apps (e.g. `fish`).
-     - `reset_state()` (`\x1bc` RIS) clears both flags.
-   - `AlacrittyScreen::modes()` populates `in_band_resize` from `in_band_resize_alt` when `TermMode::ALT_SCREEN` is set, else `in_band_resize_primary`.
-   - Keep `NoopEventListener` unchanged so `htui` never duplicates `hc`'s `DA1`/`DSR`/`DECRQM` replies.
-
-2. **Synthesize `CSI 48 ; rows ; cols ; 0 ; 0 t` in `AttachSession` while active and Mode 2048 is enabled (`src/term/session.rs`):**
-   - Track `last_in_band_resize_sent: Option<(u16, u16)>` on `AttachSession`.
-   - Add helper `send_in_band_resize_if_needed(&mut self) -> HcResult<bool>`:
-     - Requires `self.state == SessionState::Active && self.screen.modes().in_band_resize`.
-     - Let `(cols, rows) = self.screen.size()`. If `self.last_in_band_resize_sent == Some((cols, rows))`, returns `Ok(false)`.
-     - Sends `format!("\x1b[48;{rows};{cols};0;0t")` via `ch.send_data(...)` and records `self.last_in_band_resize_sent = Some((cols, rows))`.
-   - Call/reset consistently across all session lifecycle points:
-     - `attach_observe` / `release`: reset `last_in_band_resize_sent = None` (never emits in `Observing` mode).
-     - `attach_active`: reset `last_in_band_resize_sent = None`, then call `send_in_band_resize_if_needed()` (snapshot frames arriving later via `handle_frame(Data)` will also trigger it as soon as `?2048h` is processed).
-     - `take_over_at`: reset `last_in_band_resize_sent = None`, resize screen to `(cols, rows)`, then call `send_in_band_resize_if_needed()` (immediately syncs if `Observing` had already seen `?2048h`, and avoids duplicate sends if the new snapshot replays `?2048h` at the same `(cols, rows)`).
-     - `request_resize` / `flush_pending_resize_inner`: right after `ch.send_resize(cols, rows)?` and `self.screen.resize(cols, rows)`, call `self.send_in_band_resize_if_needed()?`.
-     - `handle_frame(FrameKind::Data)`: after `self.screen.process(&frame.payload)` and credit flow, if `!self.screen.modes().in_band_resize`, clear `self.last_in_band_resize_sent = None`; else if `self.state == SessionState::Active`, call `let _ = self.send_in_band_resize_if_needed();`.
-     - `handle_frame(FrameKind::Resize)`: after `self.screen.resize(cols, rows)`, if `self.state == SessionState::Active`, call `let _ = self.send_in_band_resize_if_needed();`.
-     - `handle_frame(FrameKind::Close)`: clear `self.last_in_band_resize_sent = None`.
-
-3. **Prime startup pane geometry & send target `InitialSize` on `Spawn` (`src/hc/types.rs`, `src/ui/app.rs`, `src/ui/event_loop.rs`):**
-   - Extract `TuiApp::compute_panes_area(&self, area: Rect) -> Rect` from `TuiApp::render` (`src/ui/app.rs`) and add `TuiApp::predict_spawn_inner_size(&self, target: &SpawnTarget) -> Option<(u16, u16)>` using existing `SplitTree::compute_rects` / split ratio logic.
-   - In `run_tui_loop` (`src/ui/event_loop.rs`), before `attach_active_panel_terminals`, initialize `if let Ok(sz) = terminal.size() { app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, sz.width, sz.height)); }` so startup attachments use the real pane size instead of falling back to `(80, 24)`.
-   - In `src/hc/types.rs`, add `InitialSize { pub cols: u16, pub rows: u16 }` and `#[serde(skip_serializing_if = "Option::is_none")] pub size: Option<InitialSize>` to `RunParams`. Populate `size` in `dispatch_action(AppAction::Spawn)` from `app.predict_spawn_inner_size(&effective_target)` so newly spawned `nvim` instances start directly at their target pane dimensions rather than `200x120`.
+---
 
 ## Dependency Graph
 
 ```
-Task 1: Track DECSET 2048 (in_band_resize) in AlacrittyScreen & ScreenModes
-  │     (src/term/screen.rs)
+Task 1: Author README.md header, overview, UI diagram, prerequisites, installation & quick start
   │
-  └──▶ Task 2: Emit CSI 48;rows;cols;0;0t in AttachSession on resize/attach/take-over
-         │     (src/term/session.rs + tests/term.rs)
+  └──▶ Task 2: Document CLI subcommands, exit codes, socket discovery, hc auto-start & config
          │
-         ├──▶ Task 3: Prime startup panes_area & pass RunParams.size on Spawn
-         │      │     (src/hc/types.rs + src/ui/app.rs + src/ui/event_loop.rs)
-         │      │
-         │      └──▶ Task 4: Add nvim Mode 2048 shrink/grow, split & SyncBackend regressions
-         │             │     (tests/term.rs + tests/ui_snapshots.rs)
-         │             │
-         │             └──▶ Task 5: Quality gates, reinstall htui & live nvim + hc verification
+         ├── Checkpoint: Phase 1 Verification (CLI / Transport / Config accuracy check)
+         │
+         └──▶ Task 3: Document spaces/panels/agents, keybindings, mouse/clipboard & dialogs
+                │
+                └──▶ Task 4: Document terminal emulation, architecture, testing commands & license
+                       │
+                       └── Checkpoint: Complete (Full source audit, link check, cargo test/fmt/clippy)
 ```
+
+---
 
 ## Task List
 
-### Phase 1: Mode 2048 Tracking & In-Band Resize Transport
-- [x] **Task 1:** Track DECSET 2048 (`in_band_resize`) in `ScreenModes` and `AlacrittyScreen` (`src/term/screen.rs`) with unit tests covering primary/alt isolation, `?2048l`, `?1049l`, `RIS`, and `hc` snapshot resets.
-- [x] **Task 2:** Emit `\x1b[48;{rows};{cols};0;0t` in `AttachSession` (`src/term/session.rs`) on active resize, attach snapshot activation, and `take_over_at`, with `FakeHcServer` integration tests in `tests/term.rs`.
+### Phase 1: Overview, Setup, CLI & Configuration
+- [x] **Task 1:** Create `README.md` with project overview, feature summary, ASCII TUI architecture diagram, prerequisites (`hc 0.1.21`, Linux/macOS, Rust `1.85`), installation (`cargo install --path . --locked`), and quick start.
+- [x] **Task 2:** Document the complete CLI reference (`ls`, `status`, `events`, `open`, global `--socket`), exit codes (`0`–`4`), socket discovery precedence, environment variables, `hc` auto-start semantics, `config.toml` schema/defaults, and `htui.layout` persistence in `README.md`.
 
 ### Checkpoint: After Tasks 1–2
-- [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass with zero warnings.
+- [x] Cross-check Task 1–2 sections line-by-line against `Cargo.toml`, `src/main.rs`, `src/cli/*.rs`, `src/hc/transport.rs`, `src/config.rs`, `src/layout/store.rs`, and `docs/protocol-notes.md`.
 
-### Phase 2: Startup & Spawn Sizing + Regression Suite
-- [x] **Task 3:** Add `InitialSize` to `RunParams` (`src/hc/types.rs`), extract `compute_panes_area` + `predict_spawn_inner_size` in `TuiApp` (`src/ui/app.rs`), prime `app.last_panes_area` before startup attach, and populate `RunParams.size` in `dispatch_action(Spawn)` (`src/ui/event_loop.rs`), with unit/client tests.
-- [x] **Task 4:** Add end-to-end `nvim` `Cargo.toml` Mode 2048 shrink/grow, `[+H]` split, and `SyncCrosstermBackend` regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
-
-### Checkpoint: After Tasks 3–4
-- [x] `cargo test` passes across all workspace tests.
-
-### Phase 3: Full Quality Gate & Live `nvim` Verification
-- [x] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and run isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY resize, attach, split, and `:q!` -> `zsh` verification.
+### Phase 2: Interactive Controls, Terminal Emulation & Developer Guide
+- [x] **Task 3:** Document workspaces (`Spaces`, isolated `Panels`, split panes), `Agents` panel detection and status glyphs, Observing vs Active `[Take over]`, complete `Ctrl+B` prefix keybindings and sidebar/dialog keys, mouse controls/passthrough/`Shift` selection/scrollback, and OSC 52 + native clipboard integration in `README.md`.
+- [x] **Task 4:** Document terminal emulation & rendering highlights (`alacritty_terminal`, Arabic/grapheme handling, `SyncCrosstermBackend`, DEC Mode 2048, resize/spawn hygiene), repository layout & `docs/protocol-notes.md` reference, testing/linting commands, and `Apache-2.0` license in `README.md`.
 
 ### Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass cleanly
-- [x] Reinstalled `htui` verified clean on live `nvim` resize, split, attach, and exit
+- [x] All acceptance criteria met with zero unverified claims and zero broken Markdown links.
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass cleanly.
+
+---
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |
 |---|---|---|
-| `CSI 48` emitted after an app exits or crashes without `\x1b[?2048l`, injecting `8;rows;cols;0;0t` into `zsh` | High | Track `in_band_resize_primary` and `in_band_resize_alt` separately; clear `in_band_resize_alt` on `?1049l` (`ALT_SCREEN` exit), clear both on `RIS` (`reset_state`), and never send `CSI 48` unless `self.screen.modes().in_band_resize` is `true` while `SessionState::Active`. |
-| Duplicate `CSI 48` sent if a future `hc` version also emits `CSI 48` or `take_over_at` overlaps with snapshot replay | Med | Live testing confirmed `nvim v0.12.5` handles identical repeated `\x1b[48;rows;cols;0;0t` cleanly and idempotently; additionally, `last_in_band_resize_sent` prevents `htui` itself from emitting duplicates for the same `(cols, rows)`. |
-| `RunParams.size` rejected by older `hc` or mocks | Low | `hc 0.1.21` OpenRPC schema explicitly defines `RunParams.size: Option<InitialSize>`; `skip_serializing_if = "Option::is_none"` preserves wire compatibility for callers with `size: None`, and `FakeHcServer` ignores unknown fields (or can record `size` cleanly). |
-| `FakeHcServer` `echo_attach_input: true` echoes `\x1b[48;...t` back into `AlacrittyScreen` during existing tests | Low | Verified `vte 0.15.0` treats `CSI 48 ; ... t` as `unhandled!()` (`src/vte/ansi.rs:1739-1745`), leaving screen state untouched; verify in `tests/term.rs`. |
-| `TuiApp::compute_panes_area` or `predict_spawn_inner_size` diverges from `TuiApp::render` layout constraints | Med | `TuiApp::render` calls `self.compute_panes_area(area)` directly so there is a single source of truth for layout math. |
+| Stale details copied from `.orca/SPEC.md` (e.g., `vt100` crate, default `observe: true`) | High | Verify every claim exclusively against `src/`, `tests/`, `Cargo.toml`, and `docs/protocol-notes.md`. |
+| Missing or inaccurate keybinding aliases, exit codes, or config defaults | Med | Cross-check `PrefixRouter::route` (`src/ui/keymap.rs`), `src/cli/*.rs`, and `Config::default()` (`src/config.rs`) line by line during verification. |
+| Broken relative links in `README.md` (e.g., `LICENSE` or `CONTRIBUTING.md`) | Low | Verify every linked path in `README.md` exists on disk (`docs/protocol-notes.md`, `Cargo.toml`). |
+| Concurrent cleanup commits in `src/`/`tests/` shifting minor behavior | Med | Re-read target modules right before writing and run `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` at the final checkpoint. |
 
 ## Open Questions
-- None; all mechanisms and edge cases were empirically verified against `nvim v0.12.5`, `hc 0.1.21`, `alacritty_terminal 0.26.0`, and live `/home/tawargy/.cargo/bin/htui` PTY traces.
+- None; all documented flags, bindings, defaults, and internal mechanisms were verified directly in the repository source.
