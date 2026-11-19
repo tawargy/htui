@@ -27,13 +27,13 @@
 **Description:** In `src/term/screen.rs`, update `AlacrittyScreen::resize(cols, rows)` so that on the primary screen (`!TermMode::ALT_SCREEN`) when shrinking columns (`target_cols < old_term_cols`): (1) resize rows first at `old_term_cols` if height changed, (2) capture `hist_before = grid.history_size()`, `pre_cursor`, and `pre_last_occupied`, (3) run `self.term.resize(target)`, (4) count `trailing_blanks` below `max(cursor_row, last_non_clear_row)` and `pushed = grid.history_size().saturating_sub(hist_before)`, (5) reclaim `reclaim = pushed.min(trailing_blanks)` lines back from scrollback via `self.term.resize(target_rows + reclaim)` followed by `self.term.resize(target_rows)`, restoring `saved_display_offset` if `> 0`, and (6) when `reclaim > 0` and `cursor.point.line == Line(0)` right after step 3, compute the exact un-clamped cursor row via a padded scratch `Grid` over `0..=pre_last_occupied` so the cursor remains on the prompt row rather than drifting onto a wrapped `RPROMPT` continuation row. Update `tests/term.rs::alacritty_screen_bidirectional_soft_wrap_reflow` to assert both blank-bottom-row preservation (`40x10 -> 20x10 -> 80x10`) and full-screen scrollback reflow (`40x2 -> 20x2 -> 80x2`), and add unit tests in `src/term/screen.rs`.
 
 **Acceptance criteria:**
-- [ ] Shrinking width on a primary screen with blank trailing rows (e.g., `ls` + `zsh` prompt+`RPROMPT` in top rows of a tall pane, or fresh prompt on `Line(0)`) does not push top lines or prompts into scrollback while blank rows remain below.
-- [ ] Cursor position remains exact on the prompt line (never clamped onto a wrapped `RPROMPT` `✓` row) across multi-step shrink and grow sequences, even when the prompt starts at `Line(0)`.
-- [ ] `alacritty_screen_bidirectional_soft_wrap_reflow` passes for both blank-bottom preservation and full-screen scrollback reflow, and alt-screen / `cols == 1` invariants remain intact.
+- [x] Shrinking width on a primary screen with blank trailing rows (e.g., `ls` + `zsh` prompt+`RPROMPT` in top rows of a tall pane, or fresh prompt on `Line(0)`) does not push top lines or prompts into scrollback while blank rows remain below.
+- [x] Cursor position remains exact on the prompt line (never clamped onto a wrapped `RPROMPT` `✓` row) across multi-step shrink and grow sequences, even when the prompt starts at `Line(0)`.
+- [x] `alacritty_screen_bidirectional_soft_wrap_reflow` passes for both blank-bottom preservation and full-screen scrollback reflow, and alt-screen / `cols == 1` invariants remain intact.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib term::screen && cargo test --test term`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib term::screen && cargo test --test term`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
@@ -46,9 +46,9 @@
 ---
 
 ## Checkpoint: After Tasks 1-2
-- [ ] `cargo check --all-targets` passes with zero warnings
-- [ ] `cargo test --lib` and `cargo test --test term` pass
-- [ ] `AlacrittyScreen` keeps `ls` + `zsh` prompt+`RPROMPT` clean across repeated shrink/grow resizes in isolation
+- [x] `cargo check --all-targets` passes with zero warnings
+- [x] `cargo test --lib` and `cargo test --test term` pass
+- [x] `AlacrittyScreen` keeps `ls` + `zsh` prompt+`RPROMPT` clean across repeated shrink/grow resizes in isolation
 
 ---
 

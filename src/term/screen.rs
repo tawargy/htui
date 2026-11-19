@@ -291,10 +291,103 @@ impl ScreenModel for AlacrittyScreen {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
+        use alacritty_terminal::grid::{Dimensions, Grid};
+        use alacritty_terminal::index::Line;
+        use alacritty_terminal::term::TermMode;
+
         self.logical_cols = cols.max(1);
         self.logical_rows = rows.max(1);
         let dims = ScreenDims::new(self.logical_cols, self.logical_rows);
+
+        let old_term_cols = self.term.columns();
+        let old_term_rows = self.term.screen_lines();
+        let target_cols = dims.columns();
+        let target_rows = dims.screen_lines();
+
+        if self.term.mode().contains(TermMode::ALT_SCREEN) || target_cols >= old_term_cols {
+            self.term.resize(dims);
+            return;
+        }
+
+        let saved_display_offset = self.term.grid().display_offset();
+
+        // If height also changed, apply row resize first at old_term_cols so `hist_before`
+        // isolates lines pushed into scrollback solely by column-shrink wrapping.
+        if target_rows != old_term_rows {
+            self.term.resize(ScreenDims {
+                cols: old_term_cols,
+                rows: target_rows,
+            });
+        }
+
+        let pre_grid = self.term.grid();
+        let hist_before = pre_grid.history_size();
+        let pre_cursor = pre_grid.cursor.clone();
+        let pre_cursor_row = pre_cursor.point.line.0.clamp(0, target_rows as i32 - 1) as usize;
+        let pre_last_non_clear = (0..target_rows)
+            .rev()
+            .find(|&r| !pre_grid[Line(r as i32)].is_clear())
+            .unwrap_or(0);
+        let pre_last_occupied = pre_cursor_row.max(pre_last_non_clear);
+        let pre_rows: Vec<_> = (0..=pre_last_occupied)
+            .map(|r| pre_grid[Line(r as i32)].clone())
+            .collect();
+
         self.term.resize(dims);
+
+        let post_grid = self.term.grid();
+        let pushed = post_grid.history_size().saturating_sub(hist_before);
+        if pushed == 0 {
+            return;
+        }
+
+        let post_cursor_line = post_grid.cursor.point.line;
+        let post_cursor_row = post_cursor_line.0.clamp(0, target_rows as i32 - 1) as usize;
+        let post_last_non_clear = (0..target_rows)
+            .rev()
+            .find(|&r| !post_grid[Line(r as i32)].is_clear())
+            .unwrap_or(0);
+        let post_occupied_end = post_cursor_row.max(post_last_non_clear);
+        let trailing_blanks = target_rows.saturating_sub(post_occupied_end + 1);
+        let reclaim = pushed.min(trailing_blanks);
+
+        if reclaim == 0 {
+            return;
+        }
+
+        // If `alacritty_terminal`'s `max(line - 1, Line(0))` clamp fired because `Line(0)` wrapped,
+        // compute the exact un-clamped cursor row on a scratch grid padded with `pushed` top rows.
+        let corrected_cursor_line = if post_cursor_line == Line(0) {
+            let pad = pushed;
+            let scratch_rows = pad + pre_last_occupied + 1;
+            let mut scratch = Grid::new(scratch_rows, old_term_cols, pushed + 4);
+            for (r, row) in pre_rows.into_iter().enumerate() {
+                scratch[Line((pad + r) as i32)] = row;
+            }
+            scratch.cursor = pre_cursor;
+            scratch.cursor.point.line = Line(scratch.cursor.point.line.0 + pad as i32);
+            scratch.resize(true, scratch_rows, target_cols);
+            let unclamped = scratch.cursor.point.line.0 - (pushed - reclaim) as i32;
+            Some(Line(unclamped.clamp(0, target_rows as i32 - 1)))
+        } else {
+            None
+        };
+
+        self.term.resize(ScreenDims {
+            cols: target_cols,
+            rows: target_rows + reclaim,
+        });
+        self.term.resize(ScreenDims {
+            cols: target_cols,
+            rows: target_rows,
+        });
+
+        if let Some(line) = corrected_cursor_line {
+            self.term.grid_mut().cursor.point.line = line;
+        }
+        if saved_display_offset > 0 {
+            self.set_scrollback(saved_display_offset);
+        }
     }
 
     fn size(&self) -> (u16, u16) {
@@ -873,5 +966,78 @@ mod tests {
                 "old and new prompts merged onto one row: {rows:?}"
             );
         }
+    }
+
+    #[test]
+    fn shrink_reclaims_trailing_blanks_and_preserves_line0_cursor_and_ls_output() {
+        use alacritty_terminal::grid::Dimensions;
+
+        // Case 1: Fresh zsh prompt + RPROMPT on Line(0) of a tall pane (40x10 -> 20x10 -> 40x10)
+        let mut s_line0 = AlacrittyScreen::new(40, 10, 100);
+        // Prompt on row 0 (14 chars), move forward 23 cols to col 37, write " ✓ ", move back 25 cols from col 39 to col 14
+        s_line0.process(b"htui (main) > \x1b[23C \xE2\x9C\x93 \x1b[25D");
+        assert_eq!(s_line0.cursor(), (14, 0, true));
+
+        s_line0.resize(20, 10);
+        assert_eq!(
+            s_line0.term.grid().history_size(),
+            0,
+            "Line(0) wrap must be reclaimed into blank rows, not pushed to scrollback"
+        );
+        assert_eq!(s_line0.row_text(0), "htui (main) >");
+        assert_eq!(s_line0.row_text(1).trim(), "\u{2713}");
+        assert_eq!(
+            s_line0.cursor(),
+            (14, 0, true),
+            "cursor must remain on Line(0) prompt row rather than clamping onto wrapped RPROMPT row"
+        );
+
+        // Now zsh redraws at 20x10 with \r\x1b[J and new prompt + RPROMPT
+        s_line0.process(b"\r\r\x1b[0m\x1b[Jhtui (main) > \x1b[3C \xE2\x9C\x93 \x1b[5D");
+        s_line0.resize(40, 10);
+        assert_eq!(s_line0.row_text(0), "htui (main) >     \u{2713}");
+        assert_eq!(s_line0.row_text(1), "");
+        assert_eq!(s_line0.cursor(), (14, 0, true));
+
+        // Case 2: ls output + prompt in top rows of tall pane across shrink/grow (80x20 -> 40x15 -> 80x20)
+        let mut s_tall = AlacrittyScreen::new(80, 20, 100);
+        s_tall.process(b"htui (main) > ls\r\n");
+        s_tall.process(b"Cargo.toml  src  tests\r\n");
+        s_tall.process(b"htui (main) > \x1b[63C \xE2\x9C\x93 \x1b[65D");
+        assert_eq!(s_tall.cursor(), (14, 2, true));
+
+        s_tall.resize(40, 15);
+        assert_eq!(
+            s_tall.term.grid().history_size(),
+            0,
+            "ls output must stay visible in tall pane when trailing blank rows exist"
+        );
+        assert_eq!(s_tall.row_text(0), "htui (main) > ls");
+        assert_eq!(s_tall.row_text(1), "Cargo.toml  src  tests");
+        assert_eq!(s_tall.row_text(2), "htui (main) >");
+        assert_eq!(s_tall.cursor(), (14, 2, true));
+
+        // Simulate zsh SIGWINCH redraw at 40 cols, then grow back to 80x20
+        s_tall.process(b"\r\r\x1b[0m\x1b[Jhtui (main) > \x1b[23C \xE2\x9C\x93 \x1b[25D");
+        s_tall.resize(80, 20);
+        assert_eq!(s_tall.row_text(0), "htui (main) > ls");
+        assert_eq!(s_tall.row_text(1), "Cargo.toml  src  tests");
+        assert!(s_tall.row_text(2).starts_with("htui (main) >"));
+        assert_eq!(s_tall.row_text(3), "");
+    }
+
+    #[test]
+    fn shrink_reclaim_preserves_nonzero_scrollback_offset() {
+        let mut screen = AlacrittyScreen::new(40, 6, 100);
+        for i in 0..8 {
+            screen.process(format!("line-{i:02}\r\n").as_bytes());
+        }
+        // Clear bottom rows while keeping history, put a long line on row 0 that wraps on shrink
+        screen.process(b"\x1b[1;1H\x1b[J012345678901234567890123456789012345");
+        screen.set_scrollback(2);
+        assert_eq!(screen.scrollback(), 2);
+
+        screen.resize(20, 6);
+        assert_eq!(screen.scrollback(), 2);
     }
 }

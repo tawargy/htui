@@ -62,10 +62,10 @@ Task 1: Clear stale WRAPLINE on erase-from-col-0 in AlacrittyScreen::process
 
 ### Phase 1: `AlacrittyScreen` `WRAPLINE` & Resize Integrity
 - [x] **Task 1:** Add `ClearWrapHandler` in `src/term/screen.rs` to clear dangling `Flags::WRAPLINE` on `prev_line` (including `Line(-1)`) when `clear_line` or `clear_screen` erases from column 0, with unit tests.
-- [ ] **Task 2:** Update `AlacrittyScreen::resize` in `src/term/screen.rs` to reclaim spurious column-shrink scrollback pushes into trailing blank bottom rows (with exact `Line(0)` cursor-clamp correction) and update `tests/term.rs::alacritty_screen_bidirectional_soft_wrap_reflow`.
+- [x] **Task 2:** Update `AlacrittyScreen::resize` in `src/term/screen.rs` to reclaim spurious column-shrink scrollback pushes into trailing blank bottom rows (with exact `Line(0)` cursor-clamp correction) and update `tests/term.rs::alacritty_screen_bidirectional_soft_wrap_reflow`.
 
 ### Checkpoint: After Tasks 1–2
-- [ ] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
+- [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
 
 ### Phase 2: Session Frame-Drain Ordering & Outer `Event::Resize` Settle
 - [ ] **Task 3:** Drain `ch.rx` frames before resize in `AttachSession` (`src/term/session.rs`), add trailing-edge `OUTER_RESIZE_SETTLE` coordination in `TuiApp` (`src/ui/app.rs`) and `run_tui_loop` (`src/ui/event_loop.rs`), and add unit/integration tests.

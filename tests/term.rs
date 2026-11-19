@@ -1091,27 +1091,49 @@ fn alacritty_screen_nvim_sigwinch_redraw_sequences() {
 
 #[test]
 fn alacritty_screen_bidirectional_soft_wrap_reflow() {
+    // 1. Blank-bottom-row preservation: shrinking width on a tall pane reclaims wrapped lines
+    // into trailing blank rows instead of pushing them into scrollback.
     let mut screen = AlacrittyScreen::new(40, 10, 100);
     let long_line = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwx"; // 60 chars
     screen.process(long_line.as_bytes());
     assert_eq!(screen.row_text(0), &long_line[..40]);
     assert_eq!(screen.row_text(1), &long_line[40..]);
 
-    // Shrink to 20 cols -> wraps across 3 rows (first chunk moves into scrollback)
     screen.resize(20, 10);
-    assert_eq!(screen.row_text(0), &long_line[20..40]);
-    assert_eq!(screen.row_text(1), &long_line[40..60]);
-    screen.set_scrollback(1);
-    assert_eq!(screen.scrollback(), 1);
     assert_eq!(screen.row_text(0), &long_line[..20]);
-    screen.set_scrollback(0);
+    assert_eq!(screen.row_text(1), &long_line[20..40]);
+    assert_eq!(screen.row_text(2), &long_line[40..60]);
+    screen.set_scrollback(1);
+    assert_eq!(
+        screen.scrollback(),
+        0,
+        "trailing blank rows should absorb wrapped lines without pushing to scrollback"
+    );
 
-    // Grow back to 80 cols -> pulls wrapped line from scrollback and unwraps onto row 0
     screen.resize(80, 10);
     assert_eq!(screen.row_text(0), long_line);
     assert_eq!(screen.row_text(1), "");
 
-    // Alt screen resizes cleanly without bogus primary reflow
+    // 2. Full-screen scrollback reflow: when no blank rows remain below (40x2), shrinking to 20x2
+    // pushes the top wrapped chunk into scrollback, and growing to 80x2 pulls it back onto row 0.
+    let mut full_screen = AlacrittyScreen::new(40, 2, 100);
+    full_screen.process(long_line.as_bytes());
+    assert_eq!(full_screen.row_text(0), &long_line[..40]);
+    assert_eq!(full_screen.row_text(1), &long_line[40..]);
+
+    full_screen.resize(20, 2);
+    assert_eq!(full_screen.row_text(0), &long_line[20..40]);
+    assert_eq!(full_screen.row_text(1), &long_line[40..60]);
+    full_screen.set_scrollback(1);
+    assert_eq!(full_screen.scrollback(), 1);
+    assert_eq!(full_screen.row_text(0), &long_line[..20]);
+    full_screen.set_scrollback(0);
+
+    full_screen.resize(80, 2);
+    assert_eq!(full_screen.row_text(0), long_line);
+    assert_eq!(full_screen.row_text(1), "");
+
+    // 3. Alt screen resizes cleanly without bogus primary reflow
     screen.process(b"\x1b[?1049h\x1b[1;1HALT_LINE");
     assert!(screen.modes().alternate_screen);
     screen.resize(20, 6);
