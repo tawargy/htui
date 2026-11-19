@@ -291,8 +291,8 @@ impl ScreenModel for AlacrittyScreen {
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
-        use alacritty_terminal::grid::{Dimensions, Grid};
-        use alacritty_terminal::index::Line;
+        use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
+        use alacritty_terminal::index::{Column, Line};
         use alacritty_terminal::term::TermMode;
 
         self.logical_cols = cols.max(1);
@@ -309,10 +309,8 @@ impl ScreenModel for AlacrittyScreen {
             return;
         }
 
-        let saved_display_offset = self.term.grid().display_offset();
-
-        // If height also changed, apply row resize first at old_term_cols so `hist_before`
-        // isolates lines pushed into scrollback solely by column-shrink wrapping.
+        // If height also changed, apply row resize first at old_term_cols so the viewport-only
+        // wrap measurement and saved display_offset reflect the post-row-resize state.
         if target_rows != old_term_rows {
             self.term.resize(ScreenDims {
                 cols: old_term_cols,
@@ -321,7 +319,7 @@ impl ScreenModel for AlacrittyScreen {
         }
 
         let pre_grid = self.term.grid();
-        let hist_before = pre_grid.history_size();
+        let saved_display_offset = pre_grid.display_offset();
         let pre_cursor = pre_grid.cursor.clone();
         let pre_cursor_row = pre_cursor.point.line.0.clamp(0, target_rows as i32 - 1) as usize;
         let pre_last_non_clear = (0..target_rows)
@@ -329,18 +327,44 @@ impl ScreenModel for AlacrittyScreen {
             .find(|&r| !pre_grid[Line(r as i32)].is_clear())
             .unwrap_or(0);
         let pre_last_occupied = pre_cursor_row.max(pre_last_non_clear);
+
+        // Fast read-only scan: if cursor and all occupied viewport cells fit within target_cols,
+        // no viewport row can wrap, so skip cloning rows or allocating scratch grids.
+        let cursor_wraps =
+            pre_cursor.point.column.0 + usize::from(pre_cursor.input_needs_wrap) > target_cols;
+        let any_viewport_overflow = cursor_wraps
+            || (0..=pre_last_occupied).any(|r| {
+                pre_grid[Line(r as i32)][Column(target_cols)..]
+                    .iter()
+                    .any(|c| !c.is_empty())
+            });
+        if !any_viewport_overflow {
+            self.term.resize(dims);
+            return;
+        }
+
         let pre_rows: Vec<_> = (0..=pre_last_occupied)
             .map(|r| pre_grid[Line(r as i32)].clone())
             .collect();
 
+        // Measure lines pushed solely by viewport wrapping on a viewport-only scratch Grid so
+        // scrollback caps and wrapping of existing scrollback lines do not skew reclaim.
+        let max_scroll = (pre_last_occupied + 1) * old_term_cols;
+        let mut viewport_scratch = Grid::new(target_rows, old_term_cols, max_scroll);
+        for (r, row) in pre_rows.iter().cloned().enumerate() {
+            viewport_scratch[Line(r as i32)] = row;
+        }
+        viewport_scratch.cursor = pre_cursor.clone();
+        viewport_scratch.resize(true, target_rows, target_cols);
+        let viewport_pushed = viewport_scratch.history_size();
+
         self.term.resize(dims);
 
-        let post_grid = self.term.grid();
-        let pushed = post_grid.history_size().saturating_sub(hist_before);
-        if pushed == 0 {
+        if viewport_pushed == 0 {
             return;
         }
 
+        let post_grid = self.term.grid();
         let post_cursor_line = post_grid.cursor.point.line;
         let post_cursor_row = post_cursor_line.0.clamp(0, target_rows as i32 - 1) as usize;
         let post_last_non_clear = (0..target_rows)
@@ -349,25 +373,27 @@ impl ScreenModel for AlacrittyScreen {
             .unwrap_or(0);
         let post_occupied_end = post_cursor_row.max(post_last_non_clear);
         let trailing_blanks = target_rows.saturating_sub(post_occupied_end + 1);
-        let reclaim = pushed.min(trailing_blanks);
+        let reclaim = viewport_pushed
+            .min(trailing_blanks)
+            .min(post_grid.history_size());
 
         if reclaim == 0 {
             return;
         }
 
         // If `alacritty_terminal`'s `max(line - 1, Line(0))` clamp fired because `Line(0)` wrapped,
-        // compute the exact un-clamped cursor row on a scratch grid padded with `pushed` top rows.
+        // compute the exact un-clamped cursor row on a scratch grid padded with `viewport_pushed` top rows.
         let corrected_cursor_line = if post_cursor_line == Line(0) {
-            let pad = pushed;
+            let pad = viewport_pushed;
             let scratch_rows = pad + pre_last_occupied + 1;
-            let mut scratch = Grid::new(scratch_rows, old_term_cols, pushed + 4);
+            let mut scratch = Grid::new(scratch_rows, old_term_cols, max_scroll + pad);
             for (r, row) in pre_rows.into_iter().enumerate() {
                 scratch[Line((pad + r) as i32)] = row;
             }
             scratch.cursor = pre_cursor;
             scratch.cursor.point.line = Line(scratch.cursor.point.line.0 + pad as i32);
             scratch.resize(true, scratch_rows, target_cols);
-            let unclamped = scratch.cursor.point.line.0 - (pushed - reclaim) as i32;
+            let unclamped = scratch.cursor.point.line.0 - (viewport_pushed - reclaim) as i32;
             Some(Line(unclamped.clamp(0, target_rows as i32 - 1)))
         } else {
             None
@@ -1033,5 +1059,58 @@ mod tests {
 
         screen.resize(20, 6);
         assert_eq!(screen.scrollback(), 2);
+    }
+
+    #[test]
+    fn shrink_reclaim_works_when_scrollback_is_saturated() {
+        use alacritty_terminal::grid::Dimensions;
+
+        let mut screen = AlacrittyScreen::new(40, 10, 5);
+        for i in 0..20 {
+            screen.process(format!("hist-{i:02}\r\n").as_bytes());
+        }
+        assert_eq!(screen.term.grid().history_size(), 5);
+
+        screen.process(b"\x1b[1;1H\x1b[Jhtui (main) > \x1b[23C \xE2\x9C\x93 \x1b[25D");
+        assert_eq!(screen.cursor(), (14, 0, true));
+
+        screen.resize(20, 10);
+        assert_eq!(screen.row_text(0), "htui (main) >");
+        assert_eq!(screen.row_text(1).trim(), "\u{2713}");
+        assert_eq!(screen.cursor(), (14, 0, true));
+    }
+
+    #[test]
+    fn shrink_does_not_pull_wrapped_scrollback_line_onto_viewport() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+
+        let mut screen = AlacrittyScreen::new(40, 6, 100);
+        screen.process(b"long_scrollback_line_0123456789012345\r\n");
+        for _ in 0..5 {
+            screen.process(b"\r\n");
+        }
+        screen.process(b"\x1b[1;1H\x1b[J$ ");
+        assert_eq!(screen.term.grid().history_size(), 1);
+        assert_eq!(screen.term.grid()[Line(-1)][Column(0)].c, 'l');
+
+        screen.resize(20, 6);
+        assert_eq!(screen.row_text(0), "$");
+        assert_eq!(screen.row_text(1), "");
+        assert_eq!(screen.cursor(), (2, 0, true));
+    }
+
+    #[test]
+    fn shrink_reclaim_with_height_change_and_nonzero_scrollback_offset() {
+        let mut screen = AlacrittyScreen::new(40, 6, 100);
+        for i in 0..10 {
+            screen.process(format!("line-{i:02}\r\n").as_bytes());
+        }
+        screen.process(b"\x1b[1;1H\x1b[J012345678901234567890123456789012345");
+        screen.set_scrollback(3);
+        assert_eq!(screen.scrollback(), 3);
+
+        screen.resize(20, 8);
+        assert_eq!(screen.scrollback(), 1);
     }
 }
