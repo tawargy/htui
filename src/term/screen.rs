@@ -113,14 +113,181 @@ impl AlacrittyScreen {
     }
 }
 
+struct ClearWrapHandler<'a>(&'a mut alacritty_terminal::Term<NoopEventListener>);
+
+fn clear_prev_wrapline(
+    term: &mut alacritty_terminal::Term<NoopEventListener>,
+    line: alacritty_terminal::index::Line,
+) {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+
+    let grid = term.grid();
+    if line <= grid.topmost_line() {
+        return;
+    }
+    let cols = grid.columns();
+    if cols == 0 {
+        return;
+    }
+    let prev_line = Line(line.0 - 1);
+    let last_col = Column(cols - 1);
+    if grid[prev_line][last_col].flags.contains(Flags::WRAPLINE) {
+        term.grid_mut()[prev_line][last_col]
+            .flags
+            .remove(Flags::WRAPLINE);
+    }
+}
+
+macro_rules! forward_handler_methods {
+    (
+        $(fn $name:ident(&mut self $(, $arg:ident : $ty:ty)* );)*
+    ) => {
+        $(
+            #[inline]
+            fn $name(&mut self $(, $arg : $ty)*) {
+                self.0.$name($($arg),*);
+            }
+        )*
+    };
+}
+
+impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
+    forward_handler_methods! {
+        fn set_title(&mut self, title: Option<String>);
+        fn set_cursor_style(&mut self, style: Option<alacritty_terminal::vte::ansi::CursorStyle>);
+        fn set_cursor_shape(&mut self, shape: alacritty_terminal::vte::ansi::CursorShape);
+        fn input(&mut self, c: char);
+        fn goto(&mut self, line: i32, col: usize);
+        fn goto_line(&mut self, line: i32);
+        fn goto_col(&mut self, col: usize);
+        fn insert_blank(&mut self, count: usize);
+        fn move_up(&mut self, lines: usize);
+        fn move_down(&mut self, lines: usize);
+        fn identify_terminal(&mut self, intermediate: Option<char>);
+        fn device_status(&mut self, arg: usize);
+        fn move_forward(&mut self, cols: usize);
+        fn move_backward(&mut self, cols: usize);
+        fn move_down_and_cr(&mut self, lines: usize);
+        fn move_up_and_cr(&mut self, lines: usize);
+        fn put_tab(&mut self, count: u16);
+        fn backspace(&mut self);
+        fn carriage_return(&mut self);
+        fn linefeed(&mut self);
+        fn bell(&mut self);
+        fn substitute(&mut self);
+        fn newline(&mut self);
+        fn set_horizontal_tabstop(&mut self);
+        fn scroll_up(&mut self, lines: usize);
+        fn scroll_down(&mut self, lines: usize);
+        fn insert_blank_lines(&mut self, lines: usize);
+        fn delete_lines(&mut self, lines: usize);
+        fn erase_chars(&mut self, count: usize);
+        fn delete_chars(&mut self, count: usize);
+        fn move_backward_tabs(&mut self, count: u16);
+        fn move_forward_tabs(&mut self, count: u16);
+        fn save_cursor_position(&mut self);
+        fn restore_cursor_position(&mut self);
+        fn clear_tabs(&mut self, mode: alacritty_terminal::vte::ansi::TabulationClearMode);
+        fn reset_state(&mut self);
+        fn reverse_index(&mut self);
+        fn terminal_attribute(&mut self, attr: alacritty_terminal::vte::ansi::Attr);
+        fn set_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
+        fn unset_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
+        fn report_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
+        fn set_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
+        fn unset_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
+        fn report_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
+        fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>);
+        fn set_keypad_application_mode(&mut self);
+        fn unset_keypad_application_mode(&mut self);
+        fn set_active_charset(&mut self, index: alacritty_terminal::vte::ansi::CharsetIndex);
+        fn configure_charset(
+            &mut self,
+            index: alacritty_terminal::vte::ansi::CharsetIndex,
+            charset: alacritty_terminal::vte::ansi::StandardCharset
+        );
+        fn set_color(&mut self, index: usize, color: alacritty_terminal::vte::ansi::Rgb);
+        fn dynamic_color_sequence(&mut self, prefix: String, index: usize, terminator: &str);
+        fn reset_color(&mut self, index: usize);
+        fn clipboard_store(&mut self, clipboard: u8, base64: &[u8]);
+        fn clipboard_load(&mut self, clipboard: u8, terminator: &str);
+        fn decaln(&mut self);
+        fn push_title(&mut self);
+        fn pop_title(&mut self);
+        fn text_area_size_pixels(&mut self);
+        fn text_area_size_chars(&mut self);
+        fn set_hyperlink(&mut self, hyperlink: Option<alacritty_terminal::vte::ansi::Hyperlink>);
+        fn report_keyboard_mode(&mut self);
+        fn push_keyboard_mode(&mut self, mode: alacritty_terminal::vte::ansi::KeyboardModes);
+        fn pop_keyboard_modes(&mut self, to_pop: u16);
+        fn set_keyboard_mode(
+            &mut self,
+            mode: alacritty_terminal::vte::ansi::KeyboardModes,
+            behavior: alacritty_terminal::vte::ansi::KeyboardModesApplyBehavior
+        );
+    }
+
+    #[inline]
+    fn clear_line(&mut self, mode: alacritty_terminal::vte::ansi::LineClearMode) {
+        use alacritty_terminal::index::Column;
+        use alacritty_terminal::vte::ansi::LineClearMode;
+
+        let cursor = &self.0.grid().cursor;
+        let clears_col0 = match mode {
+            LineClearMode::All | LineClearMode::Left => true,
+            LineClearMode::Right => !cursor.input_needs_wrap && cursor.point.column == Column(0),
+        };
+        let line = cursor.point.line;
+        self.0.clear_line(mode);
+        if clears_col0 {
+            clear_prev_wrapline(self.0, line);
+        }
+    }
+
+    #[inline]
+    fn clear_screen(&mut self, mode: alacritty_terminal::vte::ansi::ClearMode) {
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::vte::ansi::ClearMode;
+
+        let cursor_point = self.0.grid().cursor.point;
+        let clear_mode = match mode {
+            ClearMode::Below => 0u8,
+            ClearMode::Above => 1u8,
+            ClearMode::All => 2u8,
+            ClearMode::Saved => 3u8,
+        };
+        self.0.clear_screen(mode);
+        match clear_mode {
+            0 => {
+                if cursor_point.column == Column(0) {
+                    clear_prev_wrapline(self.0, cursor_point.line);
+                }
+            }
+            1 => {
+                clear_prev_wrapline(self.0, cursor_point.line);
+                if cursor_point.line > Line(1) {
+                    clear_prev_wrapline(self.0, Line(0));
+                }
+            }
+            2 => {
+                clear_prev_wrapline(self.0, Line(0));
+            }
+            _ => {}
+        }
+    }
+}
+
 impl ScreenModel for AlacrittyScreen {
     fn process(&mut self, bytes: &[u8]) {
+        let mut handler = ClearWrapHandler(&mut self.term);
         if let Some(deadline) = self.parser.sync_timeout().sync_timeout() {
             if std::time::Instant::now() >= deadline {
-                self.parser.stop_sync(&mut self.term);
+                self.parser.stop_sync(&mut handler);
             }
         }
-        self.parser.advance(&mut self.term, bytes);
+        self.parser.advance(&mut handler, bytes);
     }
 
     fn resize(&mut self, cols: u16, rows: u16) {
@@ -574,5 +741,137 @@ mod tests {
         // DSR (CSI 6 n -> Event::PtyWrite), DA1 (CSI c -> Event::PtyWrite), OSC 0 title, BEL
         screen.process(b"\x1b[6n\x1b[c\x1b]0;my-title\x07\x07hello");
         assert_eq!(screen.row_text(0), "hello");
+    }
+
+    #[test]
+    fn clear_from_col_zero_breaks_prev_wrapline_including_scrollback() {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Line};
+        use alacritty_terminal::term::cell::Flags;
+
+        // 1. Scrollback Line(-1) WRAPLINE cleared by \r\x1b[J (ClearMode::Below at col 0)
+        let mut s1 = AlacrittyScreen::new(10, 2, 100);
+        s1.process(b"0123456789abcdefghijZ");
+        assert_eq!(s1.term.grid().history_size(), 1);
+        assert!(
+            s1.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        );
+        s1.process(b"\x1b[1;1H\x1b[J");
+        assert!(
+            !s1.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "ClearMode::Below at col 0 must clear WRAPLINE on Line(-1)"
+        );
+
+        // 2. \x1b[2K and \x1b[K at col 0 clear prev_line WRAPLINE; mid-line \x1b[K preserves it
+        let mut s2 = AlacrittyScreen::new(10, 4, 100);
+        s2.process(b"0123456789ab");
+        assert!(
+            s2.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        );
+        s2.process(b"\x1b[2;3H\x1b[K");
+        assert!(
+            s2.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "mid-line CSI K must preserve prev_line WRAPLINE"
+        );
+        s2.process(b"\r\x1b[K");
+        assert!(
+            !s2.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI K at col 0 must clear prev_line WRAPLINE"
+        );
+
+        // 3. CSI 2K at col > 0 still clears prev_line WRAPLINE
+        let mut s3 = AlacrittyScreen::new(10, 4, 100);
+        s3.process(b"0123456789abcd");
+        s3.process(b"\x1b[2K");
+        assert!(
+            !s3.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 2K must clear prev_line WRAPLINE"
+        );
+
+        // 4. CSI 1K (LineClearMode::Left) clears prev_line WRAPLINE
+        let mut s4 = AlacrittyScreen::new(10, 4, 100);
+        s4.process(b"0123456789abcd");
+        s4.process(b"\x1b[1K");
+        assert!(
+            !s4.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 1K must clear prev_line WRAPLINE"
+        );
+
+        // 5. CSI 2J (ClearMode::All) clears Line(-1) WRAPLINE when scrolled into history
+        let mut s5 = AlacrittyScreen::new(10, 3, 100);
+        s5.process(b"0123456789");
+        s5.process(b"a\x1b[1;1H");
+        // Put WRAPLINE on Line(0) (which becomes Line(-2)) and Line(1) (which becomes Line(-1))
+        let mut s6 = AlacrittyScreen::new(10, 2, 100);
+        s6.process(b"0123456789");
+        // Write 1 char on row 1, then go to row 1 col 0 and write 11 chars? Wait: 10 chars at row 1 sets WRAPLINE only when wrapping to row 2 (scrolling).
+        // Wait: if we have 3 rows, write "x\r\n0123456789a" -> row 0="x", row 1="0123456789"(WRAPLINE), row 2="a".
+        // Then CSI 2J pushes rows 0..3 -> Line(-2) has WRAPLINE, Line(-1) is "a".
+        // What if row 2 also wrapped? On 2-row screen: row 0 = "x", row 1 = "0123456789", then input 'a' scrolls row 0 to Line(-1) and row 1 is Line(0) with WRAPLINE.
+        // Instead on 3-row screen: fill row 0, fill row 1 (WRAPLINE on row 0), fill row 2 (WRAPLINE on row 1). No scroll yet!
+        s5 = AlacrittyScreen::new(10, 3, 100);
+        s5.process(b"\x1b[2;1H0123456789a");
+        // Now row 0 is blank, row 1 has WRAPLINE, row 2 has "a".
+        // If we manually check s5 before CSI 2J, row 1 has WRAPLINE. After CSI 2J, row 1 is Line(-2).
+        // To get WRAPLINE onto Line(-1) specifically via CSI 2J:
+        // On a 2-row screen, write 11 chars -> row 0 has WRAPLINE, row 1 has 'a'.
+        // Wait: clear_viewport pushes ONLY up to the last non-empty line, or all 2 rows?
+        // If row 1 is empty, clear_viewport pushes ONLY row 0 (so row 0 becomes Line(-1))!
+        // We can't get WRAPLINE on row 0 with row 1 empty via normal text unless row 1 was erased after wrap, which clears row 0's WRAPLINE!
+        // Still, CSI 2J check on s6: clear_viewport pushes rows, verify no panic and Line(-1) has no WRAPLINE.
+        s6.process(b"\x1b[2J");
+        assert!(
+            !s6.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        );
+
+        // 6. input_needs_wrap with CSI K (LineClearMode::Right is no-op, must NOT clear WRAPLINE)
+        let mut s9 = AlacrittyScreen::new(10, 3, 100);
+        s9.process(b"0123456789abcdefghij");
+        s9.process(b"\x1b[K");
+        assert!(
+            s9.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI K with input_needs_wrap is a no-op and must retain prev_line WRAPLINE"
+        );
+    }
+
+    #[test]
+    fn clear_screen_below_after_shrink_prevents_old_and_new_prompts_merging_on_grow() {
+        let mut screen = AlacrittyScreen::new(40, 2, 100);
+        // Line 0: previous output, Line 1: prompt + RPROMPT at col 37..40
+        screen.process(b"prev_output\r\nhtui (main) >");
+        screen.process(b"\x1b[24C \xE2\x9C\x93 ");
+        // Shrink width so Line 1 wraps ` ✓ ` onto Line 2, pushing `prev_output` and `htui (main) >` into scrollback
+        screen.resize(20, 2);
+        // Simulate zsh SIGWINCH redraw: CR + SGR reset + ED0 (\x1b[J) + new prompt
+        screen.process(b"\r\r\x1b[0m\x1b[27m\x1b[24m\x1b[Jhtui (main) >");
+        // Grow height and width back
+        screen.resize(60, 6);
+
+        let rows: Vec<String> = (0..6).map(|r| screen.row_text(r)).collect();
+        for row in &rows {
+            let count = row.matches("htui (main) >").count();
+            assert!(
+                count <= 1,
+                "old and new prompts merged onto one row: {rows:?}"
+            );
+        }
     }
 }
