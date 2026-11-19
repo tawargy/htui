@@ -147,7 +147,10 @@ macro_rules! forward_handler_methods {
         $(
             #[inline]
             fn $name(&mut self $(, $arg : $ty)*) {
-                self.0.$name($($arg),*);
+                <alacritty_terminal::Term<NoopEventListener> as alacritty_terminal::vte::ansi::Handler>::$name(
+                    self.0,
+                    $($arg),*
+                );
             }
         )*
     };
@@ -190,6 +193,7 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
         fn save_cursor_position(&mut self);
         fn restore_cursor_position(&mut self);
         fn clear_tabs(&mut self, mode: alacritty_terminal::vte::ansi::TabulationClearMode);
+        fn set_tabs(&mut self, interval: u16);
         fn reset_state(&mut self);
         fn reverse_index(&mut self);
         fn terminal_attribute(&mut self, attr: alacritty_terminal::vte::ansi::Attr);
@@ -219,6 +223,7 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
         fn text_area_size_pixels(&mut self);
         fn text_area_size_chars(&mut self);
         fn set_hyperlink(&mut self, hyperlink: Option<alacritty_terminal::vte::ansi::Hyperlink>);
+        fn set_mouse_cursor_icon(&mut self, icon: alacritty_terminal::vte::ansi::cursor_icon::CursorIcon);
         fn report_keyboard_mode(&mut self);
         fn push_keyboard_mode(&mut self, mode: alacritty_terminal::vte::ansi::KeyboardModes);
         fn pop_keyboard_modes(&mut self, to_pop: u16);
@@ -226,6 +231,13 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
             &mut self,
             mode: alacritty_terminal::vte::ansi::KeyboardModes,
             behavior: alacritty_terminal::vte::ansi::KeyboardModesApplyBehavior
+        );
+        fn set_modify_other_keys(&mut self, mode: alacritty_terminal::vte::ansi::ModifyOtherKeys);
+        fn report_modify_other_keys(&mut self);
+        fn set_scp(
+            &mut self,
+            char_path: alacritty_terminal::vte::ansi::ScpCharPath,
+            update_mode: alacritty_terminal::vte::ansi::ScpUpdateMode
         );
     }
 
@@ -926,42 +938,81 @@ mod tests {
             "CSI 1K must clear prev_line WRAPLINE"
         );
 
-        // 5. CSI 2J (ClearMode::All) clears Line(-1) WRAPLINE when scrolled into history
-        let mut s5 = AlacrittyScreen::new(10, 3, 100);
-        s5.process(b"0123456789");
-        s5.process(b"a\x1b[1;1H");
-        // Put WRAPLINE on Line(0) (which becomes Line(-2)) and Line(1) (which becomes Line(-1))
-        let mut s6 = AlacrittyScreen::new(10, 2, 100);
-        s6.process(b"0123456789");
-        // Write 1 char on row 1, then go to row 1 col 0 and write 11 chars? Wait: 10 chars at row 1 sets WRAPLINE only when wrapping to row 2 (scrolling).
-        // Wait: if we have 3 rows, write "x\r\n0123456789a" -> row 0="x", row 1="0123456789"(WRAPLINE), row 2="a".
-        // Then CSI 2J pushes rows 0..3 -> Line(-2) has WRAPLINE, Line(-1) is "a".
-        // What if row 2 also wrapped? On 2-row screen: row 0 = "x", row 1 = "0123456789", then input 'a' scrolls row 0 to Line(-1) and row 1 is Line(0) with WRAPLINE.
-        // Instead on 3-row screen: fill row 0, fill row 1 (WRAPLINE on row 0), fill row 2 (WRAPLINE on row 1). No scroll yet!
-        s5 = AlacrittyScreen::new(10, 3, 100);
-        s5.process(b"\x1b[2;1H0123456789a");
-        // Now row 0 is blank, row 1 has WRAPLINE, row 2 has "a".
-        // If we manually check s5 before CSI 2J, row 1 has WRAPLINE. After CSI 2J, row 1 is Line(-2).
-        // To get WRAPLINE onto Line(-1) specifically via CSI 2J:
-        // On a 2-row screen, write 11 chars -> row 0 has WRAPLINE, row 1 has 'a'.
-        // Wait: clear_viewport pushes ONLY up to the last non-empty line, or all 2 rows?
-        // If row 1 is empty, clear_viewport pushes ONLY row 0 (so row 0 becomes Line(-1))!
-        // We can't get WRAPLINE on row 0 with row 1 empty via normal text unless row 1 was erased after wrap, which clears row 0's WRAPLINE!
-        // Still, CSI 2J check on s6: clear_viewport pushes rows, verify no panic and Line(-1) has no WRAPLINE.
-        s6.process(b"\x1b[2J");
-        assert!(!s6.term.grid()[Line(-1)][Column(9)]
-            .flags
-            .contains(Flags::WRAPLINE));
+        // 5. CSI 2J (ClearMode::All) clears Line(-1) WRAPLINE when Line(0) scrolls into history
+        let mut s5 = AlacrittyScreen::new(10, 2, 100);
+        s5.process(b"0123456789a\x1b[2;1H\x1b[1X");
+        assert!(
+            s5.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "Line(0) must carry WRAPLINE before CSI 2J"
+        );
+        s5.process(b"\x1b[2J");
+        assert_eq!(s5.term.grid().history_size(), 1);
+        assert!(
+            !s5.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 2J must clear WRAPLINE on scrolled Line(-1)"
+        );
 
         // 6. input_needs_wrap with CSI K (LineClearMode::Right is no-op, must NOT clear WRAPLINE)
-        let mut s9 = AlacrittyScreen::new(10, 3, 100);
-        s9.process(b"0123456789abcdefghij");
-        s9.process(b"\x1b[K");
+        let mut s6 = AlacrittyScreen::new(10, 3, 100);
+        s6.process(b"0123456789abcdefghij");
+        s6.process(b"\x1b[K");
         assert!(
-            s9.term.grid()[Line(0)][Column(9)]
+            s6.term.grid()[Line(0)][Column(9)]
                 .flags
                 .contains(Flags::WRAPLINE),
             "CSI K with input_needs_wrap is a no-op and must retain prev_line WRAPLINE"
+        );
+
+        // 7. CSI 1J (ClearMode::Above) at Line(0), Line(1), and Line(>= 2)
+        // Line(0): clears WRAPLINE on scrollback Line(-1)
+        let mut s7_line0 = AlacrittyScreen::new(10, 2, 100);
+        s7_line0.process(b"0123456789abcdefghijZ");
+        assert_eq!(s7_line0.term.grid().history_size(), 1);
+        assert!(s7_line0.term.grid()[Line(-1)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        s7_line0.process(b"\x1b[1;5H\x1b[1J");
+        assert!(
+            !s7_line0.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 1J at Line(0) must clear WRAPLINE on Line(-1)"
+        );
+
+        // Line(1): leaves Line(0) content untouched while clearing Line(0) WRAPLINE
+        let mut s7_line1 = AlacrittyScreen::new(10, 3, 100);
+        s7_line1.process(b"0123456789abc");
+        assert!(s7_line1.term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        s7_line1.process(b"\x1b[2;2H\x1b[1J");
+        assert_eq!(s7_line1.row_text(0), "0123456789");
+        assert!(
+            !s7_line1.term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 1J at Line(1) must clear WRAPLINE on Line(0)"
+        );
+
+        // Line(>= 2): clears viewport rows above and clears scrollback Line(-1) WRAPLINE
+        let mut s7_line2 = AlacrittyScreen::new(10, 3, 100);
+        s7_line2.process(b"0123456789abcdefghij0123456789Z");
+        assert_eq!(s7_line2.term.grid().history_size(), 1);
+        assert!(s7_line2.term.grid()[Line(-1)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        s7_line2.process(b"\x1b[3;1H\x1b[1J");
+        assert_eq!(s7_line2.row_text(0), "");
+        assert_eq!(s7_line2.row_text(1), "");
+        assert!(
+            !s7_line2.term.grid()[Line(-1)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE),
+            "CSI 1J at Line(>= 2) must clear WRAPLINE on Line(-1)"
         );
     }
 
