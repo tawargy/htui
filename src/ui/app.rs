@@ -850,6 +850,7 @@ impl TuiApp {
                                     rows,
                                 });
                             }
+                            let _ = sess.take_pending_redraw();
                         }
                     }
                 }
@@ -861,6 +862,9 @@ impl TuiApp {
                 for sess in self.sessions.values_mut() {
                     if sess.state == SessionState::Active {
                         if let Ok(true) = sess.flush_pending_resize_now(now) {
+                            flushed = true;
+                        }
+                        if sess.take_pending_redraw() {
                             flushed = true;
                         }
                     }
@@ -1211,6 +1215,9 @@ impl TuiApp {
                     if sess.state == SessionState::Active && sess.screen.size() != (cols, rows) {
                         if let Ok(true) = sess.request_resize(cols, rows, now) {
                             resized = true;
+                        }
+                        if sess.take_pending_redraw() {
+                            self.dirty = true;
                         }
                     }
                 }

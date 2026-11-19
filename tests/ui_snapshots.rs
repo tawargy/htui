@@ -5332,3 +5332,155 @@ async fn side_by_side_zsh_rprompt_outer_resize_storm_and_divider_drag_with_sync_
         );
     }
 }
+
+#[tokio::test]
+async fn sync_pane_sizes_and_end_drag_mark_dirty_when_drained_frames_suppress_resize() {
+    use std::time::{Duration, Instant};
+
+    use fake_hc::FakeHcServer;
+    use herdr_tui::hc::framed::FramedClient;
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let p1 = app.focused_pane.unwrap();
+    let t0 = Instant::now();
+    let area1 = Rect::new(0, 0, 120, 30);
+    let mut buf1 = Buffer::empty(area1);
+    app.render(area1, &mut buf1, t0);
+
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_addr = app
+        .current_tree()
+        .find_terminal(p1)
+        .unwrap()
+        .address
+        .clone();
+    let ch1 = app.sessions[&t1_addr].channel.as_ref().unwrap().channel;
+    app.sync_pane_sizes(t0);
+
+    // 1. sync_pane_sizes: queued server Resize matching new pane size causes request_resize to return Ok(false),
+    // yet app.dirty must still be marked true because drain_frames() consumed the frame.
+    let area2 = Rect::new(0, 0, 90, 24);
+    let mut buf2 = Buffer::empty(area2);
+    app.render(area2, &mut buf2, t0 + Duration::from_millis(60));
+    let (target_c, target_r) = app.pane_inner_size(p1);
+    assert_ne!(app.sessions[&t1_addr].screen.size(), (target_c, target_r));
+
+    srv.send_attach_resize(ch1, target_c, target_r).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    app.dirty = false;
+    assert!(!app.sync_pane_sizes(t0 + Duration::from_millis(80)));
+    assert!(
+        app.dirty,
+        "sync_pane_sizes must mark dirty when request_resize drains a matching Resize frame"
+    );
+
+    // 2. EndDrag: split pane, drag twice within debounce so pending_resize is queued,
+    // send matching Resize before Up -> flush_pending_resize_now returns Ok(false) yet app.dirty must be true.
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::SplitPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p2 = app.focused_pane.unwrap();
+    let t2_addr = app
+        .current_tree()
+        .find_terminal(p2)
+        .unwrap()
+        .address
+        .clone();
+    let ch2 = app.sessions[&t2_addr].channel.as_ref().unwrap().channel;
+
+    let drag_t = t0 + Duration::from_millis(200);
+    app.render(area2, &mut buf2, drag_t);
+    app.sync_pane_sizes(drag_t);
+    let div = app.last_geom.dividers[0];
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: div.line_pos,
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(60),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: div.line_pos.saturating_sub(2),
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(65),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: div.line_pos.saturating_sub(4),
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(70),
+    );
+
+    let (dc1, dr1) = app.pane_inner_size(p1);
+    let (dc2, dr2) = app.pane_inner_size(p2);
+    srv.send_attach_resize(ch1, dc1, dr1).await;
+    srv.send_attach_resize(ch2, dc2, dr2).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    app.dirty = false;
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: div.line_pos.saturating_sub(4),
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(75),
+    );
+    assert!(
+        app.dirty,
+        "EndDrag must mark dirty when flush_pending_resize_now drains matching Resize frames"
+    );
+}

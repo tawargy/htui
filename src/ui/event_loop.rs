@@ -217,6 +217,9 @@ async fn run_tui_loop(
                     if let Ok(true) = sess.flush_pending_resize(now) {
                         app.dirty = true;
                     }
+                    if sess.take_pending_redraw() {
+                        app.dirty = true;
+                    }
                 }
             }
             Some(ev_res) = term_events.next() => {
@@ -445,6 +448,7 @@ async fn attach_terminal_in_pane(
             sess.drain_frames();
             if sess.screen.size() != (cols, rows) {
                 let _ = sess.request_resize(cols, rows, now);
+                let _ = sess.take_pending_redraw();
             }
         }
         app.dirty = true;

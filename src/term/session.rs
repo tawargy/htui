@@ -31,6 +31,7 @@ pub struct AttachSession {
     pub resize_notifications: bool,
     last_resize_sent: Option<Instant>,
     pending_resize: Option<(u16, u16)>,
+    pending_redraw: bool,
 }
 
 impl AttachSession {
@@ -44,7 +45,12 @@ impl AttachSession {
             resize_notifications: false,
             last_resize_sent: None,
             pending_resize: None,
+            pending_redraw: false,
         }
+    }
+
+    pub fn take_pending_redraw(&mut self) -> bool {
+        std::mem::take(&mut self.pending_redraw)
     }
 
     /// Initial attach always uses `observe: true` (TV-1).
@@ -138,7 +144,9 @@ impl AttachSession {
     }
 
     pub fn request_resize(&mut self, cols: u16, rows: u16, now: Instant) -> HcResult<bool> {
-        self.drain_frames();
+        if self.drain_frames() {
+            self.pending_redraw = true;
+        }
         let cols = cols.max(1);
         let rows = rows.max(1);
         if self.state != SessionState::Active {
@@ -180,7 +188,9 @@ impl AttachSession {
         now: Instant,
         ignore_debounce: bool,
     ) -> HcResult<bool> {
-        self.drain_frames();
+        if self.drain_frames() {
+            self.pending_redraw = true;
+        }
         let Some((cols, rows)) = self.pending_resize else {
             return Ok(false);
         };
