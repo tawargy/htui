@@ -5257,6 +5257,26 @@ async fn side_by_side_zsh_rprompt_outer_resize_storm_and_divider_drag_with_sync_
         settled_t + Duration::from_millis(90),
     );
     assert!(!app.has_pending_outer_resize());
+    let (dw1, dh1) = app.pane_inner_size(p1);
+    let (dw2, dh2) = app.pane_inner_size(p2);
+    assert!(
+        dw1 < sw1 && dw2 > sw2,
+        "expected divider drag to shrink p1 ({sw1} -> {dw1}) and grow p2 ({sw2} -> {dw2})"
+    );
+    assert_eq!(app.sessions[&t1_addr].screen.size(), (dw1, dh1));
+    assert_eq!(app.sessions[&t2_addr].screen.size(), (dw2, dh2));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let resize_count_after_drag = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.kind == FRAME_RESIZE)
+        .count();
+    assert_eq!(
+        resize_count_after_drag,
+        resize_count_after_settle + 2,
+        "expected divider drag to emit FRAME_RESIZE per pane before grow"
+    );
 
     // Grow outer window to 144x38, settle, sync, redraw zsh, and render through SyncCrosstermBackend
     let grow_t = settled_t + Duration::from_millis(200);

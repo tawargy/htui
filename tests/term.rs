@@ -1259,10 +1259,7 @@ fn assert_clean_zsh_screen(screen: &AlacrittyScreen, expected_ls_line: Option<&s
             "{ctx}: orphaned RPROMPT checkmark on row {r_idx}: {all_rows:?}"
         );
         assert!(
-            !row.contains("ht\n")
-                && row.trim() != "ht"
-                && row.trim() != "ui"
-                && row.trim() != "mai",
+            row.trim() != "ht" && row.trim() != "ui" && row.trim() != "mai",
             "{ctx}: mid-word split fragment on row {r_idx}: {all_rows:?}"
         );
     }

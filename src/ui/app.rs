@@ -1963,18 +1963,6 @@ mod tests {
         }
 
         // EndDrag clears pending outer resize settle state
-        app.mark_outer_resize(t0);
-        assert!(app.has_pending_outer_resize());
-        app.handle_mouse_event(
-            MouseEvent {
-                kind: MouseEventKind::Up(MouseButton::Left),
-                column: 0,
-                row: 0,
-                modifiers: KeyModifiers::NONE,
-            },
-            t0,
-        );
-        // Note: Up without active divider drag returns None; simulate active divider drag then Up
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
         let p1 = app.focused_pane.unwrap();
