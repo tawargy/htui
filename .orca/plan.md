@@ -76,10 +76,10 @@ Task 1: Track DECSET 2048 (in_band_resize) in AlacrittyScreen & ScreenModes
 
 ### Phase 2: Startup & Spawn Sizing + Regression Suite
 - [x] **Task 3:** Add `InitialSize` to `RunParams` (`src/hc/types.rs`), extract `compute_panes_area` + `predict_spawn_inner_size` in `TuiApp` (`src/ui/app.rs`), prime `app.last_panes_area` before startup attach, and populate `RunParams.size` in `dispatch_action(Spawn)` (`src/ui/event_loop.rs`), with unit/client tests.
-- [ ] **Task 4:** Add end-to-end `nvim` `Cargo.toml` Mode 2048 shrink/grow, `[+H]` split, and `SyncCrosstermBackend` regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
+- [x] **Task 4:** Add end-to-end `nvim` `Cargo.toml` Mode 2048 shrink/grow, `[+H]` split, and `SyncCrosstermBackend` regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
 
 ### Checkpoint: After Tasks 3–4
-- [ ] `cargo test` passes across all workspace tests.
+- [x] `cargo test` passes across all workspace tests.
 
 ### Phase 3: Full Quality Gate & Live `nvim` Verification
 - [ ] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and run isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY resize, attach, split, and `:q!` -> `zsh` verification.

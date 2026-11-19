@@ -5504,3 +5504,314 @@ async fn sync_pane_sizes_and_end_drag_mark_dirty_when_drained_frames_suppress_re
         "EndDrag must mark dirty when flush_pending_resize_now drains matching Resize frames"
     );
 }
+
+fn nvim_mode_2048_payload(cols: u16, rows: u16) -> Vec<u8> {
+    let cols_u = cols as usize;
+    let rows_u = rows as usize;
+    let mut out = String::from(
+        "\x1b[?1049h\x1b[?2048h\x1b[?2026h\x1b[48;2;31;31;40m\x1b[38;2;220;215;186m\x1b[2J",
+    );
+    let bufline: String = format!("{:<width$}", "  \u{e7a8} Cargo.toml", width = cols_u)
+        .chars()
+        .take(cols_u)
+        .collect();
+    out.push_str(&format!("\x1b[1;1H{bufline}"));
+
+    let content_rows = rows_u.saturating_sub(2);
+    for idx in 0..content_rows {
+        let line_no = 9 + idx;
+        let body = if line_no == 19 {
+            "tokio = { version = \"1\" }  // feat: git-blame"
+        } else {
+            "serde = { version = \"1\" }"
+        };
+        let row_str: String = format!("{line_no:>3} {body:<width$}", width = cols_u)
+            .chars()
+            .take(cols_u)
+            .collect();
+        out.push_str(&format!("\x1b[{};1H{row_str}", idx + 2));
+    }
+
+    if rows_u >= 2 {
+        let left = " \u{e0b0} NORMAL  Cargo.toml";
+        let right = " 19:1 ";
+        let gap = cols_u.saturating_sub(left.chars().count() + right.chars().count());
+        let status: String = format!("{left}{}{right}", " ".repeat(gap))
+            .chars()
+            .take(cols_u)
+            .collect();
+        out.push_str(&format!("\x1b[{rows_u};1H\x1b[48;2;42;42;55m{status}"));
+    }
+    out.push_str("\x1b[0m\x1b[?2026l");
+    out.into_bytes()
+}
+
+#[tokio::test]
+async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backend() {
+    use std::time::{Duration, Instant};
+
+    use fake_hc::{FakeHcServer, FRAME_DATA};
+    use herdr_tui::hc::framed::{Frame, FramedClient};
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::app::OUTER_RESIZE_SETTLE;
+    use herdr_tui::ui::backend::SyncCrosstermBackend;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use ratatui::{TerminalOptions, Viewport};
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    {
+        let mut st = srv.state.lock().await;
+        st.echo_attach_input = false;
+    }
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let p1 = app.focused_pane.unwrap();
+
+    let initial_area = Rect::new(0, 0, 166, 42);
+    let writer = SharedVecWriter::default();
+    let mut term = RatatuiTerminal::with_options(
+        SyncCrosstermBackend::new(writer.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(initial_area),
+        },
+    )
+    .expect("fixed terminal");
+
+    let t0 = Instant::now() - Duration::from_secs(2);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0))
+        .unwrap();
+
+    // 1. Spawn nvim into p1 -> RunParams.size matches pane_inner_size(p1)
+    let expected_p1_init = app.pane_inner_size(p1);
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "nvim".into(),
+            task: "Cargo.toml".into(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_addr = app
+        .current_tree()
+        .find_terminal(p1)
+        .unwrap()
+        .address
+        .clone();
+    let t1_model = app.model.terminals.get(&t1_addr).unwrap();
+    assert_eq!((t1_model.cols, t1_model.rows), expected_p1_init);
+
+    let ch1 = app.sessions[&t1_addr].channel.as_ref().unwrap().channel;
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(
+            ch1,
+            nvim_mode_2048_payload(expected_p1_init.0, expected_p1_init.1),
+        ));
+    assert!(app.sessions[&t1_addr].screen.modes().in_band_resize);
+
+    // 2. Outer resize storm 166x42 -> 120x36 -> 84x33, settle & sync_pane_sizes
+    let shrink_area = Rect::new(0, 0, 84, 33);
+    term.resize(shrink_area).unwrap();
+    let storm_t = t0 + Duration::from_millis(100);
+    app.mark_outer_resize(storm_t);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), storm_t))
+        .unwrap();
+    app.mark_outer_resize(storm_t + Duration::from_millis(20));
+    let settled_t = storm_t + Duration::from_millis(20) + OUTER_RESIZE_SETTLE;
+    assert!(app.take_settled_outer_resize(settled_t));
+    assert!(app.sync_pane_sizes(settled_t));
+
+    let (sw1, sh1) = app.pane_inner_size(p1);
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(ch1, nvim_mode_2048_payload(sw1, sh1)));
+    let _ = writer.take_string();
+    let mut shrink_buf = Buffer::empty(shrink_area);
+    term.draw(|f| {
+        app.render(f.area(), f.buffer_mut(), settled_t);
+        shrink_buf = f.buffer_mut().clone();
+    })
+    .unwrap();
+    let ansi_shrink = writer.take_string();
+    assert_sync_framed(&ansi_shrink, "nvim settled shrink 84x33");
+
+    let p1_rect_shrink = app
+        .last_geom
+        .panes
+        .iter()
+        .find(|p| p.pane_id == p1)
+        .unwrap()
+        .rect;
+    for x in (p1_rect_shrink.x + 1)..(p1_rect_shrink.x + p1_rect_shrink.width - 1) {
+        assert_eq!(
+            shrink_buf.cell((x, p1_rect_shrink.y + 11)).unwrap().bg,
+            Color::Rgb(31, 31, 40),
+            "shrunk nvim row must have full Kanagawa bg at x={x}"
+        );
+    }
+    let lualine_y = p1_rect_shrink.y + p1_rect_shrink.height - 2;
+    let lualine_row: String = ((p1_rect_shrink.x + 1)..(p1_rect_shrink.x + p1_rect_shrink.width - 1))
+        .map(|x| shrink_buf.cell((x, lualine_y)).unwrap().symbol())
+        .collect();
+    assert!(lualine_row.contains("NORMAL"));
+    assert!(lualine_row.contains("19:1"));
+
+    // 3. Grow 84x33 -> 110x33, settle & sync_pane_sizes
+    let grow_area = Rect::new(0, 0, 110, 33);
+    term.resize(grow_area).unwrap();
+    let grow_t = settled_t + Duration::from_millis(60);
+    app.mark_outer_resize(grow_t);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), grow_t))
+        .unwrap();
+    let grow_settled = grow_t + OUTER_RESIZE_SETTLE;
+    assert!(app.take_settled_outer_resize(grow_settled));
+    assert!(app.sync_pane_sizes(grow_settled));
+    let (gw1, gh1) = app.pane_inner_size(p1);
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(ch1, nvim_mode_2048_payload(gw1, gh1)));
+
+    // 4. Split [+H] spawning zsh in p2 beside nvim in p1, then divider drag
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::SplitPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p2 = app.focused_pane.unwrap();
+    let t2_addr = app
+        .current_tree()
+        .find_terminal(p2)
+        .unwrap()
+        .address
+        .clone();
+    let ch2 = app.sessions[&t2_addr].channel.as_ref().unwrap().channel;
+    let (split_w1, split_h1) = app.pane_inner_size(p1);
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(ch1, nvim_mode_2048_payload(split_w1, split_h1)));
+    app.sessions
+        .get_mut(&t2_addr)
+        .unwrap()
+        .handle_frame(Frame::data(ch2, b"htui (main) > ".to_vec()));
+
+    let split_t = grow_settled + Duration::from_millis(60);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), split_t))
+        .unwrap();
+
+    // Divider drag
+    let div = app.last_geom.dividers[0];
+    let drag_t = split_t + Duration::from_millis(60);
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: div.line_pos,
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t,
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: div.line_pos + 4,
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(5),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: div.line_pos + 4,
+            row: div.container.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        drag_t + Duration::from_millis(60),
+    );
+    let (dw1, dh1) = app.pane_inner_size(p1);
+    assert!(dw1 > split_w1, "expected divider drag to grow p1 ({split_w1} -> {dw1})");
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(ch1, nvim_mode_2048_payload(dw1, dh1)));
+
+    let _ = writer.take_string();
+    let mut final_buf = Buffer::empty(grow_area);
+    term.draw(|f| {
+        app.render(f.area(), f.buffer_mut(), drag_t + Duration::from_millis(65));
+        final_buf = f.buffer_mut().clone();
+    })
+    .unwrap();
+    let ansi_final = writer.take_string();
+    assert_sync_framed(&ansi_final, "nvim + zsh post-split/drag");
+    assert_moveto_follows_non_ascii(&ansi_final, "│", "nvim + zsh divider │");
+
+    // Verify borders between p1 and p2 intact, Kanagawa bg across p1, single-row lualine
+    let p1_rect = app.last_geom.panes.iter().find(|p| p.pane_id == p1).unwrap().rect;
+    let p2_rect = app.last_geom.panes.iter().find(|p| p.pane_id == p2).unwrap().rect;
+    for y in (p1_rect.y + 1)..(p1_rect.y + p1_rect.height - 1) {
+        assert_eq!(
+            final_buf.cell((p1_rect.x + p1_rect.width - 1, y)).unwrap().symbol(),
+            "│"
+        );
+        assert_eq!(final_buf.cell((p2_rect.x, y)).unwrap().symbol(), "│");
+    }
+    for x in (p1_rect.x + 1)..(p1_rect.x + p1_rect.width - 1) {
+        assert_eq!(
+            final_buf.cell((x, p1_rect.y + 11)).unwrap().bg,
+            Color::Rgb(31, 31, 40)
+        );
+    }
+
+    // Verify CSI 48 emitted for nvim settled/split/drag widths and NEVER for zsh
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let recorded = srv.recorded_frames().await;
+    let ch1_csi48: Vec<String> = recorded
+        .iter()
+        .filter(|f| f.channel == ch1 && f.kind == FRAME_DATA)
+        .map(|f| String::from_utf8_lossy(&f.payload).into_owned())
+        .collect();
+    assert!(ch1_csi48.contains(&format!("\x1b[48;{sh1};{sw1};0;0t")));
+    assert!(ch1_csi48.contains(&format!("\x1b[48;{gh1};{gw1};0;0t")));
+    assert!(ch1_csi48.contains(&format!("\x1b[48;{dh1};{dw1};0;0t")));
+
+    let ch2_data_count = recorded
+        .iter()
+        .filter(|f| f.channel == ch2 && f.kind == FRAME_DATA)
+        .count();
+    assert_eq!(ch2_data_count, 0, "zsh pane must never receive CSI 48");
+}

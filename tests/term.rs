@@ -1523,3 +1523,145 @@ async fn attach_session_suppresses_in_band_resize_when_observing_or_mode_2048_di
         .count();
     assert_eq!(resize_count, 2);
 }
+
+fn nvim_cargo_toml_frame(cols: u16, rows: u16) -> Vec<u8> {
+    let mut out = String::new();
+    let cols_usize = cols as usize;
+    let rows_usize = rows as usize;
+    // Kanagawa Wave background #1f1f28, clear entire alt screen cleanly
+    out.push_str("\x1b[?2026h\x1b[48;2;31;31;40m\x1b[38;2;220;215;186m\x1b[2J");
+    // Row 1: bufferline across full width
+    let bufline = format!("{:<width$}", "  Cargo.toml  ×", width = cols_usize);
+    out.push_str(&format!("\x1b[1;1H{}", &bufline[..cols_usize]));
+    // Content rows 2..(rows-1): numbered lines 9.. with line 19 inline git-blame & colorcolumn=120 marker
+    let content_rows = rows_usize.saturating_sub(2);
+    for idx in 0..content_rows {
+        let line_no = 9 + idx;
+        let body = if line_no == 19 {
+            "tokio = { version = \"1\", features = [\"full\"] }  // tawargy: feat"
+        } else if line_no == 27 {
+            "ratatui = \"0.29\"  # tui framework"
+        } else {
+            "serde = { version = \"1\", features = [\"derive\"] }"
+        };
+        let line = format!("{line_no:>3} {body}");
+        let padded: String = format!("{line:<width$}", width = cols_usize)
+            .chars()
+            .take(cols_usize)
+            .collect();
+        out.push_str(&format!("\x1b[{};1H{padded}", idx + 2));
+    }
+    // Bottom row: single-row lualine with right-aligned line:col
+    if rows_usize >= 2 {
+        let left = " NORMAL   Cargo.toml ";
+        let right = " 19:1 ";
+        let gap = cols_usize.saturating_sub(left.len() + right.len());
+        let lualine: String = format!("{left}{}{right}", " ".repeat(gap))
+            .chars()
+            .take(cols_usize)
+            .collect();
+        out.push_str(&format!("\x1b[{rows_usize};1H\x1b[48;2;42;42;55m{lualine}"));
+    }
+    out.push_str("\x1b[0m\x1b[?2026l");
+    out.into_bytes()
+}
+
+#[tokio::test]
+async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
+    use fake_hc::{make_terminal, FRAME_DATA};
+    use ratatui::style::Color;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let mut nvim_term = make_terminal("t-nvim-ct", "nvim");
+    nvim_term["cols"] = serde_json::json!(200);
+    nvim_term["rows"] = serde_json::json!(120);
+    srv.add_terminal(nvim_term).await;
+    {
+        let mut st = srv.state.lock().await;
+        st.echo_attach_input = false;
+        st.attach_outputs.insert(
+            "t-nvim-ct".to_string(),
+            b"\x1b[?1049h\x1b[?2048h".to_vec(),
+        );
+    }
+
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let mut sess = AttachSession::new("t-nvim-ct".to_string(), 134, 38);
+    sess.attach_active(&framed).await.expect("attach_active");
+    let ch = sess.channel.as_ref().unwrap().channel;
+
+    let snap = sess.recv_next().await.expect("snapshot");
+    sess.handle_frame(snap);
+    assert!(sess.screen.modes().alternate_screen);
+    assert!(sess.screen.modes().in_band_resize);
+
+    // 1. Attach at 134x38 triggers CSI 48;38;134;0;0t and full-width redraw
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(134, 38)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(sess.screen.row_text(0).contains("Cargo.toml"));
+    assert!(sess.screen.row_text(11).starts_with(" 19 tokio"));
+    assert!(sess.screen.row_text(37).contains("NORMAL"));
+
+    // 2. Shrink 134x38 -> 52x33 emits CSI 48;33;52;0;0t and redraws cleanly at 52 cols
+    let t0 = Instant::now();
+    assert!(sess.request_resize(52, 33, t0).expect("shrink 52x33"));
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(52, 33)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(sess.screen.row_text(11).starts_with(" 19 tokio"));
+    assert!(sess.screen.row_text(12).starts_with(" 20 serde"));
+    assert!(!sess.screen.row_text(31).contains("NORMAL"));
+    assert!(sess.screen.row_text(32).contains("NORMAL"));
+    assert!(sess.screen.row_text(32).contains("19:1"));
+
+    // 3. Grow 52x33 -> 78x33 emits CSI 48;33;78;0;0t and renders full 78-col bg (no col-52 Reset gap)
+    assert!(sess
+        .request_resize(78, 33, t0 + Duration::from_millis(60))
+        .expect("grow 78x33"));
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(78, 33)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(sess.screen.row_text(11).contains("tawargy: feat"));
+    assert!(sess.screen.row_text(32).contains("NORMAL"));
+    assert!(sess.screen.row_text(32).ends_with("19:1"));
+    for col in 52..78 {
+        assert_eq!(
+            sess.screen.cell(11, col).unwrap().bg,
+            Color::Rgb(31, 31, 40),
+            "col {col} must not have stale Color::Reset gap"
+        );
+    }
+
+    // 4. Exit nvim back to zsh (?2048l ?1049l) -> subsequent resize must NOT emit CSI 48
+    srv.send_attach_data(ch, b"\x1b[?2048l\x1b[?1049lhtui > ".to_vec())
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(!sess.screen.modes().alternate_screen);
+    assert!(!sess.screen.modes().in_band_resize);
+    assert_eq!(sess.screen.row_text(0), "htui >");
+
+    assert!(sess
+        .request_resize(100, 35, t0 + Duration::from_millis(120))
+        .expect("post-exit zsh resize"));
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let emitted: Vec<Vec<u8>> = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.channel == ch && f.kind == FRAME_DATA)
+        .map(|f| f.payload)
+        .collect();
+    assert_eq!(
+        emitted,
+        vec![
+            b"\x1b[48;38;134;0;0t".to_vec(),
+            b"\x1b[48;33;52;0;0t".to_vec(),
+            b"\x1b[48;33;78;0;0t".to_vec(),
+        ]
+    );
+}

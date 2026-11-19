@@ -95,12 +95,12 @@ Add focused unit/client tests in `src/ui/app.rs` and `tests/hc_client.rs` (plus 
 2. In `tests/ui_snapshots.rs`: add a side-by-side `nvim` (`?2048h`, Kanagawa RGB background + NerdFont `bufferline`/`lualine`) + `zsh` pane resize storm (`166x42 -> 84x33 -> 110x33`) and horizontal split / divider drag test rendered through `SyncCrosstermBackend`, asserting `CSI 48` synchronization at settled widths, full-width Kanagawa background (no col-52 `Color::Reset` gaps), single-row `lualine`, intact line numbers `9..38`, and intact `│` borders.
 
 **Acceptance criteria:**
-- [ ] `tests/term.rs` verifies `CSI 48` emission on attach, shrink, grow, and suppression after `?2048l` / `?1049l` exit back to `zsh`.
-- [ ] `tests/ui_snapshots.rs` verifies side-by-side `nvim` + `zsh` panes across outer resize bursts, `[+H]` split, and divider drags through `SyncCrosstermBackend` with intact borders, single-row `lualine`, and full-width `nvim` background/text.
+- [x] `tests/term.rs` verifies `CSI 48` emission on attach, shrink, grow, and suppression after `?2048l` / `?1049l` exit back to `zsh`.
+- [x] `tests/ui_snapshots.rs` verifies side-by-side `nvim` + `zsh` panes across outer resize bursts, `[+H]` split, and divider drags through `SyncCrosstermBackend` with intact borders, single-row `lualine`, and full-width `nvim` background/text.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 3
 
@@ -113,8 +113,8 @@ Add focused unit/client tests in `src/ui/app.rs` and `tests/hc_client.rs` (plus 
 ---
 
 ## Checkpoint: After Tasks 3–4
-- [ ] `cargo test` passes with zero failures or skipped assertions
-- [ ] All `nvim` Mode 2048 resize, split, attach, and `SyncCrosstermBackend` regression tests pass
+- [x] `cargo test` passes with zero failures or skipped assertions
+- [x] All `nvim` Mode 2048 resize, split, attach, and `SyncCrosstermBackend` regression tests pass
 
 ---
 
