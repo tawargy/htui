@@ -87,12 +87,12 @@ Add focused unit/integration tests for pre-resize frame draining and `TuiApp` ou
 2. In `tests/ui_snapshots.rs`: add a side-by-side two-pane `zsh` `RPROMPT` + `ls` outer resize storm + divider-drag test through `SyncCrosstermBackend`, asserting intact `│` dividers, single clean prompt per pane, clean `Buffer::diff` / ANSI output, and settled outer resize synchronization.
 
 **Acceptance criteria:**
-- [ ] `tests/term.rs` fails against the pre-fix code and passes cleanly with the exact `zsh` `RPROMPT` multi-step shrink/grow and buffered-frame-drain scenarios.
-- [ ] `tests/ui_snapshots.rs` verifies side-by-side `zsh` `RPROMPT` panes across outer resize bursts and divider drags through `SyncCrosstermBackend` with zero divider breakage or duplicated/split prompts.
+- [x] `tests/term.rs` fails against the pre-fix code and passes cleanly with the exact `zsh` `RPROMPT` multi-step shrink/grow and buffered-frame-drain scenarios.
+- [x] `tests/ui_snapshots.rs` verifies side-by-side `zsh` `RPROMPT` panes across outer resize bursts and divider drags through `SyncCrosstermBackend` with zero divider breakage or duplicated/split prompts.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --test term --test ui_snapshots`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --test term --test ui_snapshots`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 3
 
@@ -105,8 +105,8 @@ Add focused unit/integration tests for pre-resize frame draining and `TuiApp` ou
 ---
 
 ## Checkpoint: After Tasks 3-4
-- [ ] `cargo test` passes with zero failures or skipped assertions
-- [ ] All resize regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` pass
+- [x] `cargo test` passes with zero failures or skipped assertions
+- [x] All resize regression tests in `tests/term.rs` and `tests/ui_snapshots.rs` pass
 
 ---
 

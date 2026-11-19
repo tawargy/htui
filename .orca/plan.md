@@ -69,10 +69,10 @@ Task 1: Clear stale WRAPLINE on erase-from-col-0 in AlacrittyScreen::process
 
 ### Phase 2: Session Frame-Drain Ordering & Outer `Event::Resize` Settle
 - [x] **Task 3:** Drain `ch.rx` frames before resize in `AttachSession` (`src/term/session.rs`), add trailing-edge `OUTER_RESIZE_SETTLE` coordination in `TuiApp` (`src/ui/app.rs`) and `run_tui_loop` (`src/ui/event_loop.rs`), and add unit/integration tests.
-- [ ] **Task 4:** Add end-to-end `zsh` prompt + `RPROMPT` (`✓`) shrink/grow and side-by-side `Event::Resize` storm regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
+- [x] **Task 4:** Add end-to-end `zsh` prompt + `RPROMPT` (`✓`) shrink/grow and side-by-side `Event::Resize` storm regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
 
 ### Checkpoint: After Tasks 3–4
-- [ ] `cargo test` passes with all new and existing tests green.
+- [x] `cargo test` passes with all new and existing tests green.
 
 ### Phase 3: Full Quality Gate & Live Verification
 - [ ] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and verify via an isolated live `hc` + `zsh` PTY resize-storm test.

@@ -5041,3 +5041,279 @@ fn side_by_side_nvim_rep_and_colon_sgr_panes_with_sync_backend() {
     assert!(rendered_str.contains("1%"));
     assert!(rendered_str.contains("20:56"));
 }
+
+fn zsh_rprompt_seq(cols: u16) -> Vec<u8> {
+    let prompt = "htui (main) > ";
+    let gap = cols.saturating_sub(prompt.len() as u16 + 3);
+    format!(
+        "\r\r\x1b[0m\x1b[27m\x1b[24m\x1b[J{prompt}\x1b[K\x1b[{gap}C \u{2713} \x1b[{}D",
+        gap + 2
+    )
+    .into_bytes()
+}
+
+#[tokio::test]
+async fn side_by_side_zsh_rprompt_outer_resize_storm_and_divider_drag_with_sync_backend() {
+    use std::time::{Duration, Instant};
+
+    use fake_hc::{FakeHcServer, FRAME_RESIZE};
+    use herdr_tui::hc::framed::{Frame, FramedClient};
+    use herdr_tui::hc::rpc::RpcClient;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::ui::app::OUTER_RESIZE_SETTLE;
+    use herdr_tui::ui::backend::SyncCrosstermBackend;
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use ratatui::{TerminalOptions, Viewport};
+    use tempfile::TempDir;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = TempDir::new().unwrap();
+    let store = LayoutStore::new(tmp.path().join("layout.json"), &rpc.hello().methods);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    let api_panel_id = app.active_panel_id().unwrap();
+    let p1 = app.focused_pane.unwrap();
+
+    let initial_area = Rect::new(0, 0, 160, 40);
+    let writer = SharedVecWriter::default();
+    let mut term = RatatuiTerminal::with_options(
+        SyncCrosstermBackend::new(writer.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(initial_area),
+        },
+    )
+    .expect("fixed terminal");
+
+    let t0 = Instant::now() - Duration::from_secs(2);
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0))
+        .unwrap();
+
+    // Spawn two side-by-side zsh panes
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_addr = app
+        .current_tree()
+        .find_terminal(p1)
+        .unwrap()
+        .address
+        .clone();
+
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: SpawnTarget::SplitPane {
+                panel_id: api_panel_id,
+                pane_id: p1,
+                axis: SplitAxis::Horizontal,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let p2 = app.focused_pane.unwrap();
+    let t2_addr = app
+        .current_tree()
+        .find_terminal(p2)
+        .unwrap()
+        .address
+        .clone();
+
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0))
+        .unwrap();
+    app.sync_pane_sizes(t0);
+    let _ = writer.take_string();
+
+    let (w1, _) = app.pane_inner_size(p1);
+    let (w2, _) = app.pane_inner_size(p2);
+    {
+        let s1 = app.sessions.get_mut(&t1_addr).unwrap();
+        s1.handle_frame(Frame::data(1, b"$ ls\r\nLEFT_LS_OK\r\n".to_vec()));
+        s1.handle_frame(Frame::data(1, zsh_rprompt_seq(w1)));
+    }
+    {
+        let s2 = app.sessions.get_mut(&t2_addr).unwrap();
+        s2.handle_frame(Frame::data(2, b"$ ls\r\nRIGHT_LS_OK\r\n".to_vec()));
+        s2.handle_frame(Frame::data(2, zsh_rprompt_seq(w2)));
+    }
+
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), t0))
+        .unwrap();
+    let _ = writer.take_string();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let resize_count_before_storm = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.kind == FRAME_RESIZE)
+        .count();
+
+    // Outer Event::Resize storm: 160x40 -> 140x36 -> 120x32 -> 104x28 (every 20ms)
+    let mut storm_t = Instant::now() + Duration::from_millis(100);
+    for (w, h) in [(140u16, 36u16), (120, 32), (104, 28)] {
+        storm_t += Duration::from_millis(20);
+        let step_area = Rect::new(0, 0, w, h);
+        app.mark_outer_resize(storm_t);
+        app.dirty = true;
+        // Simulate event loop drawing chrome immediately while deferring sync_pane_sizes
+        let mut step_buf = Buffer::empty(step_area);
+        app.render(step_area, &mut step_buf, storm_t);
+        assert!(app.has_pending_outer_resize());
+        assert!(!app.take_settled_outer_resize(storm_t + Duration::from_millis(20)));
+    }
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let resize_count_during_storm = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.kind == FRAME_RESIZE)
+        .count();
+    assert_eq!(
+        resize_count_during_storm, resize_count_before_storm,
+        "outer resize storm must coalesce without emitting mid-burst FRAME_RESIZE"
+    );
+
+    // Settle after OUTER_RESIZE_SETTLE -> sync_pane_sizes runs once for 104x28
+    let settled_t = storm_t + OUTER_RESIZE_SETTLE;
+    assert!(app.take_settled_outer_resize(settled_t));
+    assert!(app.sync_pane_sizes(settled_t));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let resize_count_after_settle = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.kind == FRAME_RESIZE)
+        .count();
+    assert_eq!(
+        resize_count_after_settle,
+        resize_count_before_storm + 2,
+        "expected one settled FRAME_RESIZE per pane"
+    );
+
+    // Feed zsh SIGWINCH redraws at settled 104x28 widths
+    let (sw1, _) = app.pane_inner_size(p1);
+    let (sw2, _) = app.pane_inner_size(p2);
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(1, zsh_rprompt_seq(sw1)));
+    app.sessions
+        .get_mut(&t2_addr)
+        .unwrap()
+        .handle_frame(Frame::data(2, zsh_rprompt_seq(sw2)));
+
+    // Divider drag + EndDrag clears any pending settle and flushes immediately
+    app.mark_outer_resize(settled_t);
+    let div = app.last_geom.dividers[0];
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: div.line_pos,
+            row: div.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        settled_t + Duration::from_millis(80),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: div.line_pos.saturating_sub(6),
+            row: div.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        settled_t + Duration::from_millis(85),
+    );
+    app.handle_mouse_event(
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: div.line_pos.saturating_sub(6),
+            row: div.container.y + 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        settled_t + Duration::from_millis(90),
+    );
+    assert!(!app.has_pending_outer_resize());
+
+    // Grow outer window to 144x38, settle, sync, redraw zsh, and render through SyncCrosstermBackend
+    let grow_t = settled_t + Duration::from_millis(200);
+    let final_area = Rect::new(0, 0, 144, 38);
+    app.mark_outer_resize(grow_t);
+    term.resize(final_area).expect("resize sync terminal");
+    let _ = writer.take_string();
+    term.draw(|f| app.render(f.area(), f.buffer_mut(), grow_t))
+        .unwrap();
+    let grow_ansi = writer.take_string();
+    assert_sync_framed(&grow_ansi, "grow outer resize chrome frame");
+    assert_moveto_follows_non_ascii(&grow_ansi, "│", "grow side-by-side divider │");
+
+    let final_settled_t = grow_t + OUTER_RESIZE_SETTLE;
+    assert!(app.take_settled_outer_resize(final_settled_t));
+    assert!(app.sync_pane_sizes(final_settled_t));
+
+    let (fw1, _) = app.pane_inner_size(p1);
+    let (fw2, _) = app.pane_inner_size(p2);
+    app.sessions
+        .get_mut(&t1_addr)
+        .unwrap()
+        .handle_frame(Frame::data(1, zsh_rprompt_seq(fw1)));
+    app.sessions
+        .get_mut(&t2_addr)
+        .unwrap()
+        .handle_frame(Frame::data(2, zsh_rprompt_seq(fw2)));
+
+    let mut final_buf = Buffer::empty(final_area);
+    term.draw(|f| {
+        app.render(f.area(), f.buffer_mut(), final_settled_t);
+        final_buf = f.buffer_mut().clone();
+    })
+    .expect("draw final sync frame");
+
+    let ansi = writer.take_string();
+    assert_sync_framed(&ansi, "final settled zsh RPROMPT frame");
+
+    // Verify divider columns remain intact on every inner pane row
+    let div_after = app.last_geom.dividers[0];
+    for y in (app.last_panes_area.y + 1)..app.last_panes_area.y + app.last_panes_area.height - 1 {
+        assert_eq!(final_buf.cell((div_after.line_pos - 1, y)).unwrap().symbol(), "│");
+        assert_eq!(final_buf.cell((div_after.line_pos, y)).unwrap().symbol(), "│");
+    }
+
+    let rendered = buffer_to_string(&final_buf);
+    assert!(rendered.contains("LEFT_LS_OK"), "left ls missing: {rendered}");
+    assert!(rendered.contains("RIGHT_LS_OK"), "right ls missing: {rendered}");
+    assert_eq!(
+        rendered.matches("htui (main) >").count(),
+        2,
+        "expected exactly 1 clean prompt per pane in:\n{rendered}"
+    );
+    for line in rendered.lines() {
+        assert!(
+            line.matches('\u{2713}').count() <= 2,
+            "unexpected duplicated RPROMPT checkmarks on line: {line:?}"
+        );
+    }
+}

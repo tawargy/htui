@@ -1236,3 +1236,116 @@ async fn attach_session_drains_buffered_old_width_frames_before_resize() {
     assert_eq!(session.screen.row_text(1), "");
     assert_eq!(session.screen.cursor(), (14, 0, true));
 }
+
+fn assert_clean_zsh_screen(screen: &AlacrittyScreen, expected_ls_line: Option<&str>, ctx: &str) {
+    let (_, rows) = screen.size();
+    let all_rows: Vec<String> = (0..rows).map(|r| screen.row_text(r)).collect();
+    let prompt_count: usize = all_rows
+        .iter()
+        .map(|r| r.matches("htui (main) >").count())
+        .sum();
+    assert_eq!(
+        prompt_count, 1,
+        "{ctx}: expected exactly 1 prompt across viewport, got {prompt_count} in {all_rows:?}"
+    );
+    for (r_idx, row) in all_rows.iter().enumerate() {
+        assert!(
+            row.matches("htui (main) >").count() <= 1,
+            "{ctx}: duplicated prompt on row {r_idx}: {row:?}"
+        );
+        assert_ne!(
+            row.trim(),
+            "\u{2713}",
+            "{ctx}: orphaned RPROMPT checkmark on row {r_idx}: {all_rows:?}"
+        );
+        assert!(
+            !row.contains("ht\n") && row.trim() != "ht" && row.trim() != "ui" && row.trim() != "mai",
+            "{ctx}: mid-word split fragment on row {r_idx}: {all_rows:?}"
+        );
+    }
+    if let Some(ls_line) = expected_ls_line {
+        assert!(
+            all_rows.iter().any(|r| r == ls_line),
+            "{ctx}: expected ls output {ls_line:?} intact in {all_rows:?}"
+        );
+    }
+}
+
+fn zsh_rprompt_bytes(cols: u16) -> Vec<u8> {
+    let prompt = "htui (main) > ";
+    let gap = cols.saturating_sub(prompt.len() as u16 + 3);
+    format!(
+        "\r\r\x1b[0m\x1b[27m\x1b[24m\x1b[J{prompt}\x1b[K\x1b[{gap}C \u{2713} \x1b[{}D",
+        gap + 2
+    )
+    .into_bytes()
+}
+
+#[test]
+fn zsh_rprompt_multi_step_shrink_and_grow_keeps_ls_intact_and_single_prompt() {
+    let ls_line = "Cargo.toml  README.md  src  tests";
+    let mut screen = AlacrittyScreen::new(138, 41, 1000);
+    screen.process(format!("$ ls\r\n{ls_line}\r\n").as_bytes());
+    screen.process(&zsh_rprompt_bytes(138));
+    assert_clean_zsh_screen(&screen, Some(ls_line), "initial 138x41");
+
+    // Multi-step shrink with zsh SIGWINCH redraws at intermediate sizes
+    for (cols, rows) in [(115, 36), (90, 32), (69, 29)] {
+        screen.resize(cols, rows);
+        screen.process(&zsh_rprompt_bytes(cols));
+        assert_clean_zsh_screen(&screen, Some(ls_line), &format!("shrink {cols}x{rows}"));
+    }
+
+    // Two consecutive shrinks before zsh redraws, then redraw + grow back to 134x39
+    screen.resize(58, 27);
+    screen.resize(50, 25);
+    screen.process(&zsh_rprompt_bytes(50));
+    assert_clean_zsh_screen(&screen, Some(ls_line), "double-shrink 50x25");
+
+    for (cols, rows) in [(85, 33), (110, 36), (134, 39)] {
+        screen.resize(cols, rows);
+        screen.process(&zsh_rprompt_bytes(cols));
+        assert_clean_zsh_screen(&screen, Some(ls_line), &format!("grow {cols}x{rows}"));
+    }
+
+    assert_eq!(screen.row_text(0), "$ ls");
+    assert_eq!(screen.row_text(1), ls_line);
+    assert!(screen.row_text(2).starts_with("htui (main) >"));
+    assert!(screen.row_text(2).ends_with('\u{2713}'));
+}
+
+#[tokio::test]
+async fn zsh_rprompt_line0_shrink_grow_and_buffered_frame_drain() {
+    use fake_hc::make_terminal;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    srv.add_terminal(make_terminal("t-zsh", "zsh")).await;
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    let mut session = AttachSession::new("t-zsh".to_string(), 80, 20);
+    session.attach_active(&framed).await.expect("attach");
+    let ch = session.channel.as_ref().unwrap().channel;
+
+    // Queue an 80-col Line(0) zsh RPROMPT frame in ch.rx right before shrinking to 40x20
+    srv.send_attach_data(ch, zsh_rprompt_bytes(80)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let t0 = Instant::now();
+    assert!(session.request_resize(40, 20, t0).expect("shrink 40x20"));
+    assert_eq!(session.screen.row_text(0), "htui (main) >");
+    assert_eq!(session.screen.cursor(), (14, 0, true));
+
+    // zsh SIGWINCH redraw at 40 cols, then grow back to 80x20
+    srv.send_attach_data(ch, zsh_rprompt_bytes(40)).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(session
+        .request_resize(80, 20, t0 + Duration::from_millis(60))
+        .expect("grow 80x20"));
+    session.drain_frames();
+    assert_eq!(session.screen.cursor(), (14, 0, true));
+    assert!(session.screen.row_text(0).starts_with("htui (main) >"));
+    assert!(session.screen.row_text(0).ends_with('\u{2713}'));
+    assert_eq!(session.screen.row_text(1), "");
+}
