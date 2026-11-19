@@ -283,7 +283,10 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
             }
         }
         self.term.unset_private_mode(mode);
-        if was_alt && !self.term.mode().contains(TermMode::ALT_SCREEN) {
+        if was_alt
+            && (!self.term.mode().contains(TermMode::ALT_SCREEN)
+                || matches!(mode, PrivateMode::Unknown(47 | 1047)))
+        {
             *self.in_band_resize_alt = false;
         }
     }
@@ -1289,5 +1292,26 @@ mod tests {
         screen.process(b"\x18\x1b[!p\x1b[?2048l\x1b[?1049l");
         assert!(!screen.modes().alternate_screen);
         assert!(!screen.modes().in_band_resize);
+    }
+
+    #[test]
+    fn exiting_alt_screen_via_47_or_1047_clears_alt_in_band_resize() {
+        for exit_seq in [b"\x1b[?47l".as_slice(), b"\x1b[?1047l".as_slice()] {
+            let mut screen = AlacrittyScreen::new(80, 24, 100);
+            screen.process(b"\x1b[?1049h\x1b[?2048h");
+            assert!(screen.modes().alternate_screen);
+            assert!(screen.modes().in_band_resize);
+
+            screen.process(exit_seq);
+            assert!(
+                !screen.modes().in_band_resize,
+                "exit sequence {exit_seq:?} should clear alt in_band_resize"
+            );
+            screen.process(b"\x1b[?1049h");
+            assert!(
+                !screen.modes().in_band_resize,
+                "re-entering alt screen after {exit_seq:?} should keep in_band_resize=false"
+            );
+        }
     }
 }
