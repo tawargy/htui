@@ -27,6 +27,7 @@ pub struct ScreenModes {
     pub app_cursor: bool,
     pub bracketed_paste: bool,
     pub alternate_screen: bool,
+    pub in_band_resize: bool,
     pub mouse_mode: MouseProtocolMode,
     pub mouse_encoding: MouseProtocolEncoding,
 }
@@ -65,6 +66,8 @@ pub struct AlacrittyScreen {
     parser: alacritty_terminal::vte::ansi::Processor,
     logical_cols: u16,
     logical_rows: u16,
+    in_band_resize_primary: bool,
+    in_band_resize_alt: bool,
 }
 
 struct ScreenDims {
@@ -109,11 +112,17 @@ impl AlacrittyScreen {
             parser: alacritty_terminal::vte::ansi::Processor::new(),
             logical_cols,
             logical_rows,
+            in_band_resize_primary: false,
+            in_band_resize_alt: false,
         }
     }
 }
 
-struct ClearWrapHandler<'a>(&'a mut alacritty_terminal::Term<NoopEventListener>);
+struct ClearWrapHandler<'a> {
+    term: &'a mut alacritty_terminal::Term<NoopEventListener>,
+    in_band_resize_primary: &'a mut bool,
+    in_band_resize_alt: &'a mut bool,
+}
 
 fn clear_prev_wrapline(
     term: &mut alacritty_terminal::Term<NoopEventListener>,
@@ -148,7 +157,7 @@ macro_rules! forward_handler_methods {
             #[inline]
             fn $name(&mut self $(, $arg : $ty)*) {
                 <alacritty_terminal::Term<NoopEventListener> as alacritty_terminal::vte::ansi::Handler>::$name(
-                    self.0,
+                    self.term,
                     $($arg),*
                 );
             }
@@ -194,14 +203,11 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
         fn restore_cursor_position(&mut self);
         fn clear_tabs(&mut self, mode: alacritty_terminal::vte::ansi::TabulationClearMode);
         fn set_tabs(&mut self, interval: u16);
-        fn reset_state(&mut self);
         fn reverse_index(&mut self);
         fn terminal_attribute(&mut self, attr: alacritty_terminal::vte::ansi::Attr);
         fn set_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
         fn unset_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
         fn report_mode(&mut self, mode: alacritty_terminal::vte::ansi::Mode);
-        fn set_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
-        fn unset_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
         fn report_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode);
         fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>);
         fn set_keypad_application_mode(&mut self);
@@ -242,19 +248,60 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
     }
 
     #[inline]
+    fn reset_state(&mut self) {
+        self.term.reset_state();
+        *self.in_band_resize_primary = false;
+        *self.in_band_resize_alt = false;
+    }
+
+    #[inline]
+    fn set_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode) {
+        use alacritty_terminal::term::TermMode;
+        use alacritty_terminal::vte::ansi::PrivateMode;
+
+        if matches!(mode, PrivateMode::Unknown(2048)) {
+            if self.term.mode().contains(TermMode::ALT_SCREEN) {
+                *self.in_band_resize_alt = true;
+            } else {
+                *self.in_band_resize_primary = true;
+            }
+        }
+        self.term.set_private_mode(mode);
+    }
+
+    #[inline]
+    fn unset_private_mode(&mut self, mode: alacritty_terminal::vte::ansi::PrivateMode) {
+        use alacritty_terminal::term::TermMode;
+        use alacritty_terminal::vte::ansi::PrivateMode;
+
+        let was_alt = self.term.mode().contains(TermMode::ALT_SCREEN);
+        if matches!(mode, PrivateMode::Unknown(2048)) {
+            if was_alt {
+                *self.in_band_resize_alt = false;
+            } else {
+                *self.in_band_resize_primary = false;
+            }
+        }
+        self.term.unset_private_mode(mode);
+        if was_alt && !self.term.mode().contains(TermMode::ALT_SCREEN) {
+            *self.in_band_resize_alt = false;
+        }
+    }
+
+    #[inline]
     fn clear_line(&mut self, mode: alacritty_terminal::vte::ansi::LineClearMode) {
         use alacritty_terminal::index::Column;
         use alacritty_terminal::vte::ansi::LineClearMode;
 
-        let cursor = &self.0.grid().cursor;
+        let cursor = &self.term.grid().cursor;
         let clears_col0 = match mode {
             LineClearMode::All | LineClearMode::Left => true,
             LineClearMode::Right => !cursor.input_needs_wrap && cursor.point.column == Column(0),
         };
         let line = cursor.point.line;
-        self.0.clear_line(mode);
+        self.term.clear_line(mode);
         if clears_col0 {
-            clear_prev_wrapline(self.0, line);
+            clear_prev_wrapline(self.term, line);
         }
     }
 
@@ -263,28 +310,28 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
         use alacritty_terminal::index::{Column, Line};
         use alacritty_terminal::vte::ansi::ClearMode;
 
-        let cursor_point = self.0.grid().cursor.point;
+        let cursor_point = self.term.grid().cursor.point;
         let clear_mode = match mode {
             ClearMode::Below => 0u8,
             ClearMode::Above => 1u8,
             ClearMode::All => 2u8,
             ClearMode::Saved => 3u8,
         };
-        self.0.clear_screen(mode);
+        self.term.clear_screen(mode);
         match clear_mode {
             0 => {
                 if cursor_point.column == Column(0) {
-                    clear_prev_wrapline(self.0, cursor_point.line);
+                    clear_prev_wrapline(self.term, cursor_point.line);
                 }
             }
             1 => {
-                clear_prev_wrapline(self.0, cursor_point.line);
+                clear_prev_wrapline(self.term, cursor_point.line);
                 if cursor_point.line > Line(1) {
-                    clear_prev_wrapline(self.0, Line(0));
+                    clear_prev_wrapline(self.term, Line(0));
                 }
             }
             2 => {
-                clear_prev_wrapline(self.0, Line(0));
+                clear_prev_wrapline(self.term, Line(0));
             }
             _ => {}
         }
@@ -293,7 +340,11 @@ impl alacritty_terminal::vte::ansi::Handler for ClearWrapHandler<'_> {
 
 impl ScreenModel for AlacrittyScreen {
     fn process(&mut self, bytes: &[u8]) {
-        let mut handler = ClearWrapHandler(&mut self.term);
+        let mut handler = ClearWrapHandler {
+            term: &mut self.term,
+            in_band_resize_primary: &mut self.in_band_resize_primary,
+            in_band_resize_alt: &mut self.in_band_resize_alt,
+        };
         if let Some(deadline) = self.parser.sync_timeout().sync_timeout() {
             if std::time::Instant::now() >= deadline {
                 self.parser.stop_sync(&mut handler);
@@ -447,7 +498,13 @@ impl ScreenModel for AlacrittyScreen {
     }
 
     fn modes(&self) -> ScreenModes {
-        map_alacritty_modes(*self.term.mode())
+        let mut modes = map_alacritty_modes(*self.term.mode());
+        modes.in_band_resize = if modes.alternate_screen {
+            self.in_band_resize_alt
+        } else {
+            self.in_band_resize_primary
+        };
+        modes
     }
 
     fn scrollback(&self) -> usize {
@@ -636,6 +693,7 @@ fn map_alacritty_modes(mode: alacritty_terminal::term::TermMode) -> ScreenModes 
         app_cursor: mode.contains(TermMode::APP_CURSOR),
         bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
         alternate_screen: mode.contains(TermMode::ALT_SCREEN),
+        in_band_resize: false,
         mouse_mode,
         mouse_encoding,
     }
@@ -1163,5 +1221,73 @@ mod tests {
 
         screen.resize(20, 8);
         assert_eq!(screen.scrollback(), 1);
+    }
+
+    #[test]
+    fn in_band_resize_defaults_false_and_tracks_primary_and_alt_independently() {
+        assert!(!ScreenModes::default().in_band_resize);
+
+        let mut screen = AlacrittyScreen::new(80, 24, 100);
+        assert!(!screen.modes().in_band_resize);
+        assert!(!screen.modes().alternate_screen);
+
+        // Primary screen ?2048h / ?2048l
+        screen.process(b"\x1b[?2048h");
+        assert!(screen.modes().in_band_resize);
+        screen.process(b"\x1b[?2048l");
+        assert!(!screen.modes().in_band_resize);
+
+        // Enable on primary, enter alt screen -> alt screen starts with in_band_resize == false
+        screen.process(b"\x1b[?2048h\x1b[?1049h");
+        assert!(screen.modes().alternate_screen);
+        assert!(!screen.modes().in_band_resize);
+
+        // Enable and disable on alt screen
+        screen.process(b"\x1b[?2048h");
+        assert!(screen.modes().in_band_resize);
+        screen.process(b"\x1b[?2048l");
+        assert!(!screen.modes().in_band_resize);
+
+        // Exit alt screen -> primary's flag is preserved
+        screen.process(b"\x1b[?1049l");
+        assert!(!screen.modes().alternate_screen);
+        assert!(screen.modes().in_band_resize);
+    }
+
+    #[test]
+    fn exiting_alt_screen_without_2048l_clears_alt_and_ris_clears_both() {
+        let mut screen = AlacrittyScreen::new(80, 24, 100);
+        screen.process(b"\x1b[?2048h\x1b[?1049h\x1b[?2048h");
+        assert!(screen.modes().alternate_screen);
+        assert!(screen.modes().in_band_resize);
+
+        // Unclean alt-screen exit without ?2048l clears alt flag but keeps primary flag
+        screen.process(b"\x1b[?1049l");
+        assert!(!screen.modes().alternate_screen);
+        assert!(screen.modes().in_band_resize);
+
+        // Re-entering alt screen starts with alt in_band_resize == false
+        screen.process(b"\x1b[?1049h");
+        assert!(!screen.modes().in_band_resize);
+
+        // Re-enable on alt, then RIS (\x1bc) clears both alt and primary
+        screen.process(b"\x1b[?2048h\x1bc");
+        assert!(!screen.modes().alternate_screen);
+        assert!(!screen.modes().in_band_resize);
+        screen.process(b"\x1b[?1049h");
+        assert!(!screen.modes().in_band_resize);
+    }
+
+    #[test]
+    fn hc_snapshot_replay_sets_alt_screen_and_in_band_resize() {
+        let mut screen = AlacrittyScreen::new(80, 24, 100);
+        screen.process(b"\x18\x1b[!p\x1b[?2048l\x1b[?1049l\x1b[?1049h\x1b[?2048h");
+        assert!(screen.modes().alternate_screen);
+        assert!(screen.modes().in_band_resize);
+
+        // Snapshot ending on primary screen (e.g., zsh after nvim exited)
+        screen.process(b"\x18\x1b[!p\x1b[?2048l\x1b[?1049l");
+        assert!(!screen.modes().alternate_screen);
+        assert!(!screen.modes().in_band_resize);
     }
 }

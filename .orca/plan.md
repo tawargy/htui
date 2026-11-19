@@ -1,95 +1,102 @@
-# Implementation Plan: Fix Terminal Text Corruption on Outer Window & Pane Resize
+# Implementation Plan: Fix `nvim` Rendering & Resize Corruption in `htui`
 
 ## Overview
-When resizing the outer terminal window in `htui` while one or more panes run an interactive shell with a right-aligned prompt (`zsh` + `RPROMPT` `✓`), `htui`'s own chrome (sidebar, tab bar, status bar, `│` pane dividers) stays completely intact, while the terminal pane text explodes into dozens of duplicated, horizontally concatenated, and mid-word-wrapped prompt fragments (`ht`/`ui`, `mai`/`n`, `> h`, `✓` embedded mid-line). Empirical probing against `hc 0.1.21` and live `htui` PTY resize storms (`170x45 -> 101x33 -> 134x39`, even at `200ms` per step) proved that `hc`'s own screen remains 100% clean (`terminal.read` shows a single prompt and intact `ls`), and the corruption originates inside `AlacrittyScreen` (`src/term/screen.rs`) and `htui`'s resize/event-loop coordination (`src/term/session.rs`, `src/ui/app.rs`, `src/ui/event_loop.rs`).
+When running `nvim` (`v0.12.5`) inside `htui` (`hc 0.1.21`), outer window resizes, pane splits, or re-attaching at a new pane width cause severe visual corruption inside the `nvim` pane while `htui` borders and sibling `zsh` panes remain intact. As seen in [Screenshot From 2026-11-19 13-31-49.png](file:///home/tawargy/Documents/0-WorkSpace/1-SideProjects/htui/Screenshot%20From%202026-11-19%2013-31-49.png), untouched `Cargo.toml` buffer lines and `bufferline` remain truncated at ~52 columns with `Color::Reset` (`#282a36`) across columns 52–77, while updated lines (`9`, `19` with inline git-blame, `27`, `34`) and `lualine` draw at a stale `>= 126`-column width into the 78-column `AlacrittyScreen`, wrapping and overwriting lines `10`, `20`, `28`, and `35` (placing `colorcolumn=120` at col `125 - 78 = 47`) and splitting `lualine` across two rows.
 
-Fixing this requires three coordinated layers: (1) clearing stale `Flags::WRAPLINE` links on the preceding line whenever an erase-from-column-0 sequence (`CSI J`, `CSI K`, etc.) resets a line, (2) absorbing unused trailing blank viewport rows before `AlacrittyScreen::resize` pushes wrapped top lines into scrollback history, and (3) draining buffered PTY `DATA` frames before resizing `AlacrittyScreen` while debouncing rapid outer `Event::Resize` storms until the resize burst settles.
+Empirical probing against live `nvim v0.12.5`, `hc 0.1.21`, and `/home/tawargy/.cargo/bin/htui` established the exact mechanism: `hc`'s embedded `libghostty-vt` answers `nvim`'s `DECRQM` Mode 2048 query (`\x1b[?2048$p`) with `\x1b[?2048;2$y`, causing `nvim` to enable DEC Private Mode 2048 (`\x1b[?2048h` — In-Band Window Resize Notifications) and ignore `SIGWINCH`. Because `hc 0.1.21` only updates `TIOCSWINSZ`/`SIGWINCH` on `FrameKind::Resize` and `terminal.attach` without sending `CSI 48 ; rows ; cols ; 0 ; 0 t`, `nvim` never learns the new pane size. Fixing this requires tracking Mode 2048 in `AlacrittyScreen`, emitting `CSI 48 ; rows ; cols ; 0 ; 0 t` from `AttachSession` on active resizes/attaches/takeovers while Mode 2048 is active, and sizing initial startup attaches and `RunParams` spawns cleanly.
 
 ## Root-Cause Summary
 
-| Area | Symptom | Exact Mechanism |
+| Area | Symptom | Exact Mechanism (Empirically Verified) |
 |---|---|---|
-| Blank bottom rows ignored on shrink (`src/term/screen.rs`, `alacritty_terminal 0.26.0` `Grid::shrink_columns`) | `ls` output scrolls off into history despite 35+ blank rows below cursor; prompts reach `Line(0)` and wrap `✓` into scrollback | `zsh` emits `RPROMPT` (`✓` + colored trailing space) to `col = cols - 1` (`!Cell::is_empty()`). On every width shrink (`W -> W - d`), `AlacrittyScreen::resize` calls `Term::resize` (`Grid::shrink_columns`) **before** `zsh` processes `SIGWINCH`. Because `alacritty_terminal` retains all trailing blank rows at the bottom, every wrap pushes `Line(0)` into scrollback (`Line(-1)`). |
-| Dangling `Flags::WRAPLINE` across `\r\x1b[J` prompt redraws (`src/term/screen.rs`, `alacritty_terminal` `Term::clear_screen` / `clear_line`) | Old prompts in scrollback fuse with new prompts into one giant soft-wrapped paragraph; `grow_lines` + `grow_columns` pull them down and concatenate prompts mid-line (`ht`/`ui`, `✓` mid-row) | When `Line(0)` splits into `Line(-1)` (prompt + `WRAPLINE`) and `Line(0)` (`✓`), `zsh` redraws via `\r\r\x1b[0m\x1b[27m\x1b[24m\x1b[J`. `Term::clear_screen(ClearMode::Below)` clears `Line(0)..bottom` but leaves `Flags::WRAPLINE` on `Line(-1)[last_col]` in scrollback. Subsequent `grow_lines` pulls `WRAPLINE`-chained prompts onto the viewport (shifting `cursor.point.line` down so `\r\x1b[J` leaves them above the cursor), and `grow_columns`/`shrink_columns` merges them onto shared rows. |
-| `Event::Resize` storm + pre-drain `screen.resize` (`src/ui/event_loop.rs`, `src/term/session.rs`, `src/ui/app.rs`) | 20+ intermediate `SIGWINCH` / wrap cycles during window drag; old-width `DATA` parsed against narrower `screen` strands prompt rows above cursor | `run_tui_loop` triggers `sync_pane_sizes` immediately after `terminal.draw` on `Event::Resize` and `tick.tick()` flushes `pending_resize` at `RESIZE_DEBOUNCE = 50ms` **before** `drain_frames()`. If old-width `CUF` (`\x1b[NC`) + ` ✓ ` + `CUB` (`\x1b[MD`) hits a narrower `screen`, ` ✓ ` wraps to `Line(r + 1)` and `CUB` clamps at `col 0` of `Line(r + 1)`, so the next `\r\x1b[J` leaves `Line(r)` stranded on screen. |
+| Mode 2048 (`?2048h`) ignored (`src/term/screen.rs`, `src/term/session.rs`, `hc 0.1.21`) | `nvim` stays frozen at old width (`~130` or `200x120`) after outer resize, `[+H]`/`[+V]` split, divider drag, or attach/take-over; `AlacrittyScreen` `ALT_SCREEN` crops to `52` cols then pads `52..77` with `Color::Reset`, while subsequent `nvim` line/statusline redraws at old width wrap over adjacent lines | `hc 0.1.21` replies `\x1b[?2048;2$y` to `\x1b[?2048$p`. `nvim` sends `\x1b[?1049h...\x1b[?2048h` and stops handling `SIGWINCH` (`FrameKind::Resize`, `hc attach` `TIOCSWINSZ`, and direct `kill -WINCH` all produce `0` bytes from `nvim`). `hc` never emits `CSI 48 ; rows ; cols ; ... t` on `FrameKind::Resize` or `terminal.attach`. `vte 0.15.0` parses `2048` as `PrivateMode::Unknown(2048)` which `alacritty_terminal 0.26.0` ignores. Sending `\x1b[48;{rows};{cols};0;0t` immediately triggers a full clean `nvim` redraw (`9407`–`14032` bytes). |
+| Unsafe if emitted when `?2048h` is off (`src/term/session.rs`, `src/term/screen.rs`) | Blindly sending `CSI 48` to `zsh` injects `8;rows;cols;0;0t` into the shell line editor | Live test confirmed `zsh` ZLE rings BEL and inserts `8;24;80;0;0t` literally at the prompt. `in_band_resize` must be strictly tracked per screen (`?2048h` / `?2048l` / `RIS` / alt-screen exit) and only sent while `SessionState::Active`. |
+| Duplicate query replies hazard (`src/term/screen.rs`) | Forwarding `NoopEventListener` `Event::PtyWrite` (`DA1`/`DSR`/`6n`) would corrupt `nvim` input | `hc` already intercepts and answers `\x1b[c`, `\x1b[>q`, `\x1b[18t`, `\x1b[?u`, `\x1b[5n`, `\x1b[6n`, `OSC 10/11`, and `DECRQM` between the PTY and `libghostty-vt`. `AlacrittyScreen` must keep `NoopEventListener` for `PtyWrite` and only synthesize `CSI 48` when Mode 2048 is active. |
+| Startup `(80, 24)` bounce & `200x120` spawn (`src/ui/event_loop.rs`, `src/hc/types.rs`, `src/ui/app.rs`) | Initial attach forces `(80, 24)` before first draw; spawned TUIs launch at `200x120` | `run_tui_loop` runs `attach_active_panel_terminals` while `app.last_panes_area` is `0x0` (`pane_inner_size` falls back to `(80, 24)`). `AppAction::Spawn` calls `terminal_run` without `RunParams.size` (`InitialSize`), starting commands at `200x120`. |
 
 ## Architecture Decisions
 
-1. **Break dangling `WRAPLINE` links on erase-from-column-0 via a thin `vte::ansi::Handler` wrapper (`src/term/screen.rs`):**
-   - Introduce a private `ClearWrapHandler<'a>(&'a mut alacritty_terminal::Term<NoopEventListener>)` implementing `alacritty_terminal::vte::ansi::Handler` (using a concise forwarding macro for all methods implemented by `Term`), and pass `&mut ClearWrapHandler(&mut self.term)` to both `self.parser.stop_sync` and `self.parser.advance` in `AlacrittyScreen::process`.
-   - Intercept `clear_line(mode)` and `clear_screen(mode)`:
-     - On `clear_line`: when `mode` is `LineClearMode::All | LineClearMode::Left`, or `LineClearMode::Right` with `!cursor.input_needs_wrap && cursor.point.column == Column(0)`, remove `Flags::WRAPLINE` from `prev_line`'s last column (when `line > grid.topmost_line()`).
-     - On `clear_screen`: when `mode` is `ClearMode::Below` with `cursor.point.column == Column(0)`, `ClearMode::Above`, or `ClearMode::All` (after `clear_viewport` scrolls into history, check `Line(0)`'s predecessor `Line(-1)`), remove `Flags::WRAPLINE` from `prev_line`'s last column.
-   - Read `grid[prev_line][last_col].flags.contains(Flags::WRAPLINE)` immutably before indexing mutably so `Row::occ` is never inflated on empty rows.
+1. **Track DECSET 2048 per screen (`primary` vs `alt`) in `AlacrittyScreen` (`src/term/screen.rs`):**
+   - Add `pub in_band_resize: bool` to `ScreenModes` (default `false`).
+   - Add `in_band_resize_primary: bool` and `in_band_resize_alt: bool` on `AlacrittyScreen`, passed into `ClearWrapHandler` in `AlacrittyScreen::process`.
+   - Intercept `set_private_mode`, `unset_private_mode`, and `reset_state` in `ClearWrapHandler`:
+     - `PrivateMode::Unknown(2048)` on `set_private_mode` sets `in_band_resize_alt` when `TermMode::ALT_SCREEN` is active, else `in_band_resize_primary`.
+     - `PrivateMode::Unknown(2048)` on `unset_private_mode` clears the active screen's flag (and if `ALT_SCREEN` is active and `!in_band_resize_primary`, keeps primary false; note `nvim` emits `\x1b[?2048l` before `\x1b[?1049l` on both `:q!` and `Ctrl+Z`, and `hc` snapshots reset `\x1b[?2048l` before `\x1b[?1049l`).
+     - `NamedPrivateMode::SwapScreenAndSetRestoreCursor` on `unset_private_mode` (leaving `ALT_SCREEN`) clears `in_band_resize_alt = false` so a crashed/unclean alt-screen exit cannot leak Mode 2048 back onto `zsh`, while preserving `in_band_resize_primary` for primary-screen Mode 2048 apps (e.g. `fish`).
+     - `reset_state()` (`\x1bc` RIS) clears both flags.
+   - `AlacrittyScreen::modes()` populates `in_band_resize` from `in_band_resize_alt` when `TermMode::ALT_SCREEN` is set, else `in_band_resize_primary`.
+   - Keep `NoopEventListener` unchanged so `htui` never duplicates `hc`'s `DA1`/`DSR`/`DECRQM` replies.
 
-2. **Reclaim spurious scrollback pushes into trailing blank viewport rows in `AlacrittyScreen::resize` (`src/term/screen.rs`):**
-   - On the alternate screen (`TermMode::ALT_SCREEN`) or when `target_cols >= old_term_cols`, delegate directly to `self.term.resize(target)`.
-   - On the primary screen when `target_cols < old_term_cols`:
-     1. Snapshot `saved_display_offset = self.term.grid().display_offset()`.
-     2. If `target_rows != old_term_rows`, resize rows first at `old_term_cols` so `hist_before = self.term.grid().history_size()` isolates lines pushed solely by column wrapping.
-     3. Snapshot `pre_cursor = self.term.grid().cursor.point` and `pre_last_occupied` (needed only if `cursor` clamps at `Line(0)`), then call `self.term.resize(target)`.
-     4. Let `pushed = self.term.grid().history_size().saturating_sub(hist_before)`. Count `trailing_blanks` at the bottom of the viewport strictly below `max(cursor_row, last_non_clear_row)` (via `Row::is_clear()`).
-     5. If `reclaim = pushed.min(trailing_blanks) > 0`, temporarily expand viewport lines by `reclaim` (`target_rows + reclaim`) and immediately shrink back to `target_rows` (`Term::resize`). Because `last_occupied + reclaim < target_rows`, `grow_lines` pulls the `reclaim` wrapped lines back onto the visible screen and `shrink_lines` discards only the trailing blank rows.
-     6. Edge case guard: if `reclaim > 0` and `cursor.point.line == Line(0)` right after step 3 (meaning `alacritty_terminal`'s `max(line - 1, Line(0))` clamp fired because `Line(0)` wrapped), compute the exact un-clamped cursor row from `0..=pre_last_occupied` on a scratch `Grid` pre-padded with blank top rows (`K` rows so it cannot clamp at `0`) and restore `grid.cursor.point.line` (plus `saved_display_offset` when `> 0`).
-   - Update `tests/term.rs::alacritty_screen_bidirectional_soft_wrap_reflow` to verify both blank-bottom-row preservation (`40x10 -> 20x10 -> 80x10` keeps all 3 wrapped rows visible on screen without spurious scrollback) and full-screen scrollback reflow (`40x2 -> 20x2 -> 80x2`).
+2. **Synthesize `CSI 48 ; rows ; cols ; 0 ; 0 t` in `AttachSession` while active and Mode 2048 is enabled (`src/term/session.rs`):**
+   - Track `last_in_band_resize_sent: Option<(u16, u16)>` on `AttachSession`.
+   - Add helper `send_in_band_resize_if_needed(&mut self) -> HcResult<bool>`:
+     - Requires `self.state == SessionState::Active && self.screen.modes().in_band_resize`.
+     - Let `(cols, rows) = self.screen.size()`. If `self.last_in_band_resize_sent == Some((cols, rows))`, returns `Ok(false)`.
+     - Sends `format!("\x1b[48;{rows};{cols};0;0t")` via `ch.send_data(...)` and records `self.last_in_band_resize_sent = Some((cols, rows))`.
+   - Call/reset consistently across all session lifecycle points:
+     - `attach_observe` / `release`: reset `last_in_band_resize_sent = None` (never emits in `Observing` mode).
+     - `attach_active`: reset `last_in_band_resize_sent = None`, then call `send_in_band_resize_if_needed()` (snapshot frames arriving later via `handle_frame(Data)` will also trigger it as soon as `?2048h` is processed).
+     - `take_over_at`: reset `last_in_band_resize_sent = None`, resize screen to `(cols, rows)`, then call `send_in_band_resize_if_needed()` (immediately syncs if `Observing` had already seen `?2048h`, and avoids duplicate sends if the new snapshot replays `?2048h` at the same `(cols, rows)`).
+     - `request_resize` / `flush_pending_resize_inner`: right after `ch.send_resize(cols, rows)?` and `self.screen.resize(cols, rows)`, call `self.send_in_band_resize_if_needed()?`.
+     - `handle_frame(FrameKind::Data)`: after `self.screen.process(&frame.payload)` and credit flow, if `!self.screen.modes().in_band_resize`, clear `self.last_in_band_resize_sent = None`; else if `self.state == SessionState::Active`, call `let _ = self.send_in_band_resize_if_needed();`.
+     - `handle_frame(FrameKind::Resize)`: after `self.screen.resize(cols, rows)`, if `self.state == SessionState::Active`, call `let _ = self.send_in_band_resize_if_needed();`.
+     - `handle_frame(FrameKind::Close)`: clear `self.last_in_band_resize_sent = None`.
 
-3. **Drain buffered frames before resize and settle outer `Event::Resize` bursts (`src/term/session.rs`, `src/ui/app.rs`, `src/ui/event_loop.rs`):**
-   - In `AttachSession::request_resize` and `AttachSession::flush_pending_resize_inner` (`src/term/session.rs`), call `self.drain_frames()` at entry before checking `self.state` / `self.screen.size()` / resizing so any already-queued old-width `DATA` frames are processed at the old width before `self.screen.resize` runs.
-   - Add a trailing-edge outer resize settle state on `TuiApp` (e.g., `OUTER_RESIZE_SETTLE = Duration::from_millis(120)` with `mark_outer_resize(now)`, `clear_outer_resize_settle()`, `take_settled_outer_resize(now) -> bool`, `has_pending_outer_resize() -> bool` so the logic is unit-testable without a TTY):
-     - On `Event::Resize(_, _)` (`src/ui/event_loop.rs`): call `app.mark_outer_resize(now)` and set `app.dirty = true` so `htui` chrome/borders (`│`) redraw immediately at the new `area` with zero tearing, while `run_tui_loop`'s `if app.dirty` draw block skips `app.sync_pane_sizes(now)` while `app.has_pending_outer_resize()` is true.
-     - On layout-mutating key/mouse actions (e.g. `SplitHorizontal`, `SplitVertical`, `ClosePane`, `ToggleSidebar`, `EndDrag`, `Spawn`, `TakeOver`), clear `outer_resize_settle_at` so `sync_pane_sizes` runs immediately as before (`tests/term.rs` and `tests/ui_snapshots.rs` contracts stay intact).
-     - On `tick.tick()`: first drain frames across all sessions (`sess.drain_frames()`, marking `app.dirty = true` if any), then if `app.take_settled_outer_resize(now)` is true, call `app.sync_pane_sizes(now)` (and `flush_pending_resize` on remaining sessions). Preserve `AttachSession::RESIZE_DEBOUNCE = 50ms` for `DragDivider` / `EndDrag`.
+3. **Prime startup pane geometry & send target `InitialSize` on `Spawn` (`src/hc/types.rs`, `src/ui/app.rs`, `src/ui/event_loop.rs`):**
+   - Extract `TuiApp::compute_panes_area(&self, area: Rect) -> Rect` from `TuiApp::render` (`src/ui/app.rs`) and add `TuiApp::predict_spawn_inner_size(&self, target: &SpawnTarget) -> Option<(u16, u16)>` using existing `SplitTree::compute_rects` / split ratio logic.
+   - In `run_tui_loop` (`src/ui/event_loop.rs`), before `attach_active_panel_terminals`, initialize `if let Ok(sz) = terminal.size() { app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, sz.width, sz.height)); }` so startup attachments use the real pane size instead of falling back to `(80, 24)`.
+   - In `src/hc/types.rs`, add `InitialSize { pub cols: u16, pub rows: u16 }` and `#[serde(skip_serializing_if = "Option::is_none")] pub size: Option<InitialSize>` to `RunParams`. Populate `size` in `dispatch_action(AppAction::Spawn)` from `app.predict_spawn_inner_size(&effective_target)` so newly spawned `nvim` instances start directly at their target pane dimensions rather than `200x120`.
 
 ## Dependency Graph
 
 ```
-Task 1: Clear stale WRAPLINE on erase-from-col-0 in AlacrittyScreen::process
+Task 1: Track DECSET 2048 (in_band_resize) in AlacrittyScreen & ScreenModes
   │     (src/term/screen.rs)
   │
-  ├──▶ Task 2: Reclaim trailing blank rows on AlacrittyScreen::resize shrink
-  │      │     (src/term/screen.rs + tests/term.rs)
-  │      │
-  │      └──▶ Task 3: Drain frames before resize & settle Event::Resize bursts
-  │             │     (src/term/session.rs + src/ui/app.rs + src/ui/event_loop.rs)
-  │             │
-  │             └──▶ Task 4: Add zsh RPROMPT shrink/grow & side-by-side resize storm regressions
-  │                    │     (tests/term.rs + tests/ui_snapshots.rs)
-  │                    │
-  │                    └──▶ Task 5: Full quality gate, reinstall htui & live PTY verification
+  └──▶ Task 2: Emit CSI 48;rows;cols;0;0t in AttachSession on resize/attach/take-over
+         │     (src/term/session.rs + tests/term.rs)
+         │
+         ├──▶ Task 3: Prime startup panes_area & pass RunParams.size on Spawn
+         │      │     (src/hc/types.rs + src/ui/app.rs + src/ui/event_loop.rs)
+         │      │
+         │      └──▶ Task 4: Add nvim Mode 2048 shrink/grow, split & SyncBackend regressions
+         │             │     (tests/term.rs + tests/ui_snapshots.rs)
+         │             │
+         │             └──▶ Task 5: Quality gates, reinstall htui & live nvim + hc verification
 ```
 
 ## Task List
 
-### Phase 1: `AlacrittyScreen` `WRAPLINE` & Resize Integrity
-- [x] **Task 1:** Add `ClearWrapHandler` in `src/term/screen.rs` to clear dangling `Flags::WRAPLINE` on `prev_line` (including `Line(-1)`) when `clear_line` or `clear_screen` erases from column 0, with unit tests.
-- [x] **Task 2:** Update `AlacrittyScreen::resize` in `src/term/screen.rs` to reclaim spurious column-shrink scrollback pushes into trailing blank bottom rows (with exact `Line(0)` cursor-clamp correction) and update `tests/term.rs::alacritty_screen_bidirectional_soft_wrap_reflow`.
+### Phase 1: Mode 2048 Tracking & In-Band Resize Transport
+- [x] **Task 1:** Track DECSET 2048 (`in_band_resize`) in `ScreenModes` and `AlacrittyScreen` (`src/term/screen.rs`) with unit tests covering primary/alt isolation, `?2048l`, `?1049l`, `RIS`, and `hc` snapshot resets.
+- [ ] **Task 2:** Emit `\x1b[48;{rows};{cols};0;0t` in `AttachSession` (`src/term/session.rs`) on active resize, attach snapshot activation, and `take_over_at`, with `FakeHcServer` integration tests in `tests/term.rs`.
 
 ### Checkpoint: After Tasks 1–2
-- [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass without warnings.
+- [ ] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass with zero warnings.
 
-### Phase 2: Session Frame-Drain Ordering & Outer `Event::Resize` Settle
-- [x] **Task 3:** Drain `ch.rx` frames before resize in `AttachSession` (`src/term/session.rs`), add trailing-edge `OUTER_RESIZE_SETTLE` coordination in `TuiApp` (`src/ui/app.rs`) and `run_tui_loop` (`src/ui/event_loop.rs`), and add unit/integration tests.
-- [x] **Task 4:** Add end-to-end `zsh` prompt + `RPROMPT` (`✓`) shrink/grow and side-by-side `Event::Resize` storm regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
+### Phase 2: Startup & Spawn Sizing + Regression Suite
+- [ ] **Task 3:** Add `InitialSize` to `RunParams` (`src/hc/types.rs`), extract `compute_panes_area` + `predict_spawn_inner_size` in `TuiApp` (`src/ui/app.rs`), prime `app.last_panes_area` before startup attach, and populate `RunParams.size` in `dispatch_action(Spawn)` (`src/ui/event_loop.rs`), with unit/client tests.
+- [ ] **Task 4:** Add end-to-end `nvim` `Cargo.toml` Mode 2048 shrink/grow, `[+H]` split, and `SyncCrosstermBackend` regression tests in `tests/term.rs` and `tests/ui_snapshots.rs`.
 
 ### Checkpoint: After Tasks 3–4
-- [x] `cargo test` passes with all new and existing tests green.
+- [ ] `cargo test` passes across all workspace tests.
 
-### Phase 3: Full Quality Gate & Live Verification
-- [x] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and verify via an isolated live `hc` + `zsh` PTY resize-storm test.
+### Phase 3: Full Quality Gate & Live `nvim` Verification
+- [ ] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and run isolated live `hc` + `nvim +19 Cargo.toml` + `htui` PTY resize, attach, split, and `:q!` -> `zsh` verification.
 
 ### Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [x] Reinstalled `htui` binary verified clean against live `hc` + `zsh`
+- [ ] All acceptance criteria met
+- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass cleanly
+- [ ] Reinstalled `htui` verified clean on live `nvim` resize, split, attach, and exit
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |
 |---|---|---|
-| `ClearWrapHandler` missing a `vte::ansi::Handler` method implemented on `Term` (silent no-op via trait default) | High | Verify every method in `impl<T: EventListener> Handler for Term<T>` (`alacritty_terminal 0.26.0/src/term/mod.rs`) is forwarded via macro/explicit methods, and assert existing `term::screen` + `tests/term.rs` sequences (`REP`, `HVP`, `CNL`, `CPL`, `HPA`, `ECH`, `CHT`, `CBT`, `OSC`, `CSI ? 2026 h/l`) still pass. |
-| `Line(0)` cursor-clamp correction during blank-row reclamation places cursor on `✓` wrapped row instead of prompt row | High | Explicitly check `post_shrink_cursor_line == 0 && reclaim > 0`, reconstruct exact un-clamped cursor line using a padded scratch `Grid`, and test `Line(0)` shrink+grow with `zsh` prompt+`RPROMPT` directly. |
-| `alacritty_screen_bidirectional_soft_wrap_reflow` (`tests/term.rs:1093`) currently asserts `40x10 -> 20x10` pushes row 0 to scrollback despite 8 blank rows below | Med | Update that test to assert both cases: blank-bottom preservation on `40x10 -> 20x10 -> 80x10` (`scrollback == 0`) and full-screen scrollback reflow on `40x2 -> 20x2 -> 80x2` (`scrollback == 1`). |
-| Outer `Event::Resize` settle delay (`120ms`) interfering with `app.sync_pane_sizes` in `tests/ui_snapshots.rs` or `SplitHorizontal`/`ToggleSidebar` | Med | Keep `app.sync_pane_sizes(now)` synchronous when called directly; only skip automatic post-draw `sync_pane_sizes` in `run_tui_loop` while `has_pending_outer_resize()` is active, and clear settle state on layout-mutating commands / `EndDrag`. |
-| `display_offset > 0` (user scrolled back) distorted by two-step `reclaim` resize (`+reclaim` -> `target_rows`) | Low | Save `saved_display_offset` before reclamation and restore via `self.set_scrollback(saved_display_offset)` if `> 0`. |
+| `CSI 48` emitted after an app exits or crashes without `\x1b[?2048l`, injecting `8;rows;cols;0;0t` into `zsh` | High | Track `in_band_resize_primary` and `in_band_resize_alt` separately; clear `in_band_resize_alt` on `?1049l` (`ALT_SCREEN` exit), clear both on `RIS` (`reset_state`), and never send `CSI 48` unless `self.screen.modes().in_band_resize` is `true` while `SessionState::Active`. |
+| Duplicate `CSI 48` sent if a future `hc` version also emits `CSI 48` or `take_over_at` overlaps with snapshot replay | Med | Live testing confirmed `nvim v0.12.5` handles identical repeated `\x1b[48;rows;cols;0;0t` cleanly and idempotently; additionally, `last_in_band_resize_sent` prevents `htui` itself from emitting duplicates for the same `(cols, rows)`. |
+| `RunParams.size` rejected by older `hc` or mocks | Low | `hc 0.1.21` OpenRPC schema explicitly defines `RunParams.size: Option<InitialSize>`; `skip_serializing_if = "Option::is_none"` preserves wire compatibility for callers with `size: None`, and `FakeHcServer` ignores unknown fields (or can record `size` cleanly). |
+| `FakeHcServer` `echo_attach_input: true` echoes `\x1b[48;...t` back into `AlacrittyScreen` during existing tests | Low | Verified `vte 0.15.0` treats `CSI 48 ; ... t` as `unhandled!()` (`src/vte/ansi.rs:1739-1745`), leaving screen state untouched; verify in `tests/term.rs`. |
+| `TuiApp::compute_panes_area` or `predict_spawn_inner_size` diverges from `TuiApp::render` layout constraints | Med | `TuiApp::render` calls `self.compute_panes_area(area)` directly so there is a single source of truth for layout math. |
 
 ## Open Questions
-- None; all mechanisms were empirically verified against `hc 0.1.21`, `zsh`, `alacritty_terminal 0.26.0`, and live `htui` PTY resize traces.
+- None; all mechanisms and edge cases were empirically verified against `nvim v0.12.5`, `hc 0.1.21`, `alacritty_terminal 0.26.0`, and live `/home/tawargy/.cargo/bin/htui` PTY traces.
