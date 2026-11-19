@@ -846,11 +846,9 @@ mod tests {
         let mut s1 = AlacrittyScreen::new(10, 2, 100);
         s1.process(b"0123456789abcdefghijZ");
         assert_eq!(s1.term.grid().history_size(), 1);
-        assert!(
-            s1.term.grid()[Line(-1)][Column(9)]
-                .flags
-                .contains(Flags::WRAPLINE)
-        );
+        assert!(s1.term.grid()[Line(-1)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
         s1.process(b"\x1b[1;1H\x1b[J");
         assert!(
             !s1.term.grid()[Line(-1)][Column(9)]
@@ -862,11 +860,9 @@ mod tests {
         // 2. \x1b[2K and \x1b[K at col 0 clear prev_line WRAPLINE; mid-line \x1b[K preserves it
         let mut s2 = AlacrittyScreen::new(10, 4, 100);
         s2.process(b"0123456789ab");
-        assert!(
-            s2.term.grid()[Line(0)][Column(9)]
-                .flags
-                .contains(Flags::WRAPLINE)
-        );
+        assert!(s2.term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
         s2.process(b"\x1b[2;3H\x1b[K");
         assert!(
             s2.term.grid()[Line(0)][Column(9)]
@@ -927,11 +923,9 @@ mod tests {
         // We can't get WRAPLINE on row 0 with row 1 empty via normal text unless row 1 was erased after wrap, which clears row 0's WRAPLINE!
         // Still, CSI 2J check on s6: clear_viewport pushes rows, verify no panic and Line(-1) has no WRAPLINE.
         s6.process(b"\x1b[2J");
-        assert!(
-            !s6.term.grid()[Line(-1)][Column(9)]
-                .flags
-                .contains(Flags::WRAPLINE)
-        );
+        assert!(!s6.term.grid()[Line(-1)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
 
         // 6. input_needs_wrap with CSI K (LineClearMode::Right is no-op, must NOT clear WRAPLINE)
         let mut s9 = AlacrittyScreen::new(10, 3, 100);

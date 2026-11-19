@@ -5298,13 +5298,28 @@ async fn side_by_side_zsh_rprompt_outer_resize_storm_and_divider_drag_with_sync_
     // Verify divider columns remain intact on every inner pane row
     let div_after = app.last_geom.dividers[0];
     for y in (app.last_panes_area.y + 1)..app.last_panes_area.y + app.last_panes_area.height - 1 {
-        assert_eq!(final_buf.cell((div_after.line_pos - 1, y)).unwrap().symbol(), "│");
-        assert_eq!(final_buf.cell((div_after.line_pos, y)).unwrap().symbol(), "│");
+        assert_eq!(
+            final_buf
+                .cell((div_after.line_pos - 1, y))
+                .unwrap()
+                .symbol(),
+            "│"
+        );
+        assert_eq!(
+            final_buf.cell((div_after.line_pos, y)).unwrap().symbol(),
+            "│"
+        );
     }
 
     let rendered = buffer_to_string(&final_buf);
-    assert!(rendered.contains("LEFT_LS_OK"), "left ls missing: {rendered}");
-    assert!(rendered.contains("RIGHT_LS_OK"), "right ls missing: {rendered}");
+    assert!(
+        rendered.contains("LEFT_LS_OK"),
+        "left ls missing: {rendered}"
+    );
+    assert!(
+        rendered.contains("RIGHT_LS_OK"),
+        "right ls missing: {rendered}"
+    );
     assert_eq!(
         rendered.matches("htui (main) >").count(),
         2,

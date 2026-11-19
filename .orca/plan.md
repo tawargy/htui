@@ -75,12 +75,12 @@ Task 1: Clear stale WRAPLINE on erase-from-col-0 in AlacrittyScreen::process
 - [x] `cargo test` passes with all new and existing tests green.
 
 ### Phase 3: Full Quality Gate & Live Verification
-- [ ] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and verify via an isolated live `hc` + `zsh` PTY resize-storm test.
+- [x] **Task 5:** Run `cargo test`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, reinstall `htui` (`cargo install --path . --locked`), and verify via an isolated live `hc` + `zsh` PTY resize-storm test.
 
 ### Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [ ] Reinstalled `htui` binary verified clean against live `hc` + `zsh`
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] Reinstalled `htui` binary verified clean against live `hc` + `zsh`
 
 ## Risks and Mitigations
 | Risk | Impact | Mitigation |

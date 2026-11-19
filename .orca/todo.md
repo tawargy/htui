@@ -115,17 +115,17 @@ Add focused unit/integration tests for pre-resize frame draining and `TuiApp` ou
 **Description:** Run the full workspace test suite, formatter check, and strict clippy lints across all targets, reinstall the `htui` binary locally with `cargo install --path . --locked`, and run an isolated `hc` + `zsh` PTY resize-storm smoke test (shrinking and growing both `cols` and `rows` rapidly and slowly, single and side-by-side panes) to confirm zero prompt duplication, zero mid-word splitting, and intact `ls` and `│` borders end-to-end.
 
 **Acceptance criteria:**
-- [ ] `cargo test` passes with zero failures or skipped assertions.
-- [ ] `cargo fmt --all -- --check` passes with zero formatting diffs.
-- [ ] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
-- [ ] `cargo install --path . --locked` succeeds and the reinstalled `htui` binary passes the isolated live `hc` + `zsh` PTY resize-storm check.
+- [x] `cargo test` passes with zero failures or skipped assertions.
+- [x] `cargo fmt --all -- --check` passes with zero formatting diffs.
+- [x] `cargo clippy --all-targets -- -D warnings` passes with zero warnings.
+- [x] `cargo install --path . --locked` succeeds and the reinstalled `htui` binary passes the isolated live `hc` + `zsh` PTY resize-storm check.
 
 **Verification:**
-- [ ] `cargo test`
-- [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo install --path . --locked`
-- [ ] Live isolated `hc` + `zsh` PTY resize-storm check confirms single intact prompt and intact `ls` / `│` borders
+- [x] `cargo test`
+- [x] `cargo fmt --all -- --check`
+- [x] `cargo clippy --all-targets -- -D warnings`
+- [x] `cargo install --path . --locked`
+- [x] Live isolated `hc` + `zsh` PTY resize-storm check confirms single intact prompt and intact `ls` / `│` borders
 
 **Dependencies:** Task 4
 
@@ -137,6 +137,6 @@ Add focused unit/integration tests for pre-resize frame draining and `TuiApp` ou
 ---
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
-- [ ] Reinstalled `htui` binary verified clean on live outer window resize
+- [x] All acceptance criteria met
+- [x] `cargo test`, `cargo fmt --all -- --check`, and `cargo clippy --all-targets -- -D warnings` pass with zero warnings
+- [x] Reinstalled `htui` binary verified clean on live outer window resize
