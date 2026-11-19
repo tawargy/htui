@@ -30,6 +30,13 @@ use crate::ui::tabs::{render_tab_bar, TabHitbox};
 
 pub const OUTER_RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
+fn rect_inner_size(r: Rect) -> (u16, u16) {
+    (
+        r.width.saturating_sub(2).max(1),
+        r.height.saturating_sub(2).max(1),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppAction {
     None,
@@ -842,8 +849,7 @@ impl TuiApp {
                         .find_terminal(pid)
                         .map(|t| t.address.clone())
                     {
-                        let cols = r.width.saturating_sub(2).max(1);
-                        let rows = r.height.saturating_sub(2).max(1);
+                        let (cols, rows) = rect_inner_size(r);
                         if let Some(sess) = self.sessions.get_mut(&addr) {
                             if let Ok(true) = sess.request_resize(cols, rows, now) {
                                 actions.push(AppAction::ResizePane {
@@ -1158,23 +1164,14 @@ impl TuiApp {
                 .into_iter()
                 .find(|(pid, _)| *pid == pane_id)
             {
-                return (
-                    rect.width.saturating_sub(2).max(1),
-                    rect.height.saturating_sub(2).max(1),
-                );
+                return rect_inner_size(rect);
             }
         }
         if let Some(p) = self.last_geom.panes.iter().find(|p| p.pane_id == pane_id) {
-            return (
-                p.rect.width.saturating_sub(2).max(1),
-                p.rect.height.saturating_sub(2).max(1),
-            );
+            return rect_inner_size(p.rect);
         }
         if self.last_panes_area.width > 0 && self.last_panes_area.height > 0 {
-            return (
-                self.last_panes_area.width.saturating_sub(2).max(1),
-                self.last_panes_area.height.saturating_sub(2).max(1),
-            );
+            return rect_inner_size(self.last_panes_area);
         }
         (80, 24)
     }
@@ -1183,12 +1180,6 @@ impl TuiApp {
         if self.last_panes_area.width == 0 || self.last_panes_area.height == 0 {
             return None;
         }
-        let inner = |r: Rect| {
-            (
-                r.width.saturating_sub(2).max(1),
-                r.height.saturating_sub(2).max(1),
-            )
-        };
         match *target {
             SpawnTarget::IntoPane { panel_id, pane_id } => {
                 if let Some(panel) = self
@@ -1203,10 +1194,10 @@ impl TuiApp {
                         .into_iter()
                         .find(|(pid, _)| *pid == pane_id)
                     {
-                        return Some(inner(rect));
+                        return Some(rect_inner_size(rect));
                     }
                 }
-                Some(inner(self.last_panes_area))
+                Some(rect_inner_size(self.last_panes_area))
             }
             SpawnTarget::SplitPane {
                 panel_id,
@@ -1226,13 +1217,13 @@ impl TuiApp {
                             .into_iter()
                             .find(|(pid, _)| *pid == new_pane_id)
                         {
-                            return Some(inner(rect));
+                            return Some(rect_inner_size(rect));
                         }
                     }
                 }
-                Some(inner(self.last_panes_area))
+                Some(rect_inner_size(self.last_panes_area))
             }
-            SpawnTarget::NewPanel => Some(inner(self.last_panes_area)),
+            SpawnTarget::NewPanel => Some(rect_inner_size(self.last_panes_area)),
         }
     }
 
@@ -1243,11 +1234,8 @@ impl TuiApp {
                     .compute_rects(self.last_panes_area)
                     .into_iter()
                     .map(|(pid, rect)| {
-                        (
-                            pid,
-                            rect.width.saturating_sub(2).max(1),
-                            rect.height.saturating_sub(2).max(1),
-                        )
+                        let (w, h) = rect_inner_size(rect);
+                        (pid, w, h)
                     })
                     .collect()
             } else {
@@ -1255,11 +1243,8 @@ impl TuiApp {
                     .panes
                     .iter()
                     .map(|p| {
-                        (
-                            p.pane_id,
-                            p.rect.width.saturating_sub(2).max(1),
-                            p.rect.height.saturating_sub(2).max(1),
-                        )
+                        let (w, h) = rect_inner_size(p.rect);
+                        (p.pane_id, w, h)
                     })
                     .collect()
             };

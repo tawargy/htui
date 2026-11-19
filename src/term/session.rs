@@ -190,18 +190,23 @@ impl AttachSession {
             Some(prev) => now.duration_since(prev) >= RESIZE_DEBOUNCE,
         };
         if can_send {
-            if let Some(ch) = &self.channel {
-                ch.send_resize(cols, rows)?;
-                self.screen.resize(cols, rows);
-                self.last_resize_sent = Some(now);
-                self.pending_resize = None;
-                self.send_in_band_resize_if_needed()?;
-                return Ok(true);
-            }
+            return self.apply_and_send_resize(cols, rows, now);
         } else {
             self.pending_resize = Some((cols, rows));
         }
         Ok(false)
+    }
+
+    fn apply_and_send_resize(&mut self, cols: u16, rows: u16, now: Instant) -> HcResult<bool> {
+        let Some(ch) = &self.channel else {
+            return Ok(false);
+        };
+        ch.send_resize(cols, rows)?;
+        self.screen.resize(cols, rows);
+        self.last_resize_sent = Some(now);
+        self.pending_resize = None;
+        self.send_in_band_resize_if_needed()?;
+        Ok(true)
     }
 
     pub fn flush_pending_resize(&mut self, now: Instant) -> HcResult<bool> {
@@ -237,14 +242,7 @@ impl AttachSession {
                 Some(prev) => now.duration_since(prev) >= RESIZE_DEBOUNCE,
             };
         if ready {
-            if let Some(ch) = &self.channel {
-                ch.send_resize(cols, rows)?;
-                self.screen.resize(cols, rows);
-                self.last_resize_sent = Some(now);
-                self.pending_resize = None;
-                self.send_in_band_resize_if_needed()?;
-                return Ok(true);
-            }
+            return self.apply_and_send_resize(cols, rows, now);
         }
         Ok(false)
     }
