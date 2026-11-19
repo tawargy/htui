@@ -1349,3 +1349,177 @@ async fn zsh_rprompt_line0_shrink_grow_and_buffered_frame_drain() {
     assert!(session.screen.row_text(0).ends_with('\u{2713}'));
     assert_eq!(session.screen.row_text(1), "");
 }
+
+#[tokio::test]
+async fn attach_session_emits_in_band_resize_on_active_snapshot_resize_flush_and_takeover() {
+    use fake_hc::{make_terminal, FRAME_DATA};
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    srv.add_terminal(make_terminal("t-2048-a", "nvim")).await;
+    srv.add_terminal(make_terminal("t-2048-b", "nvim")).await;
+    {
+        let mut st = srv.state.lock().await;
+        st.echo_attach_input = false;
+        st.attach_outputs
+            .insert("t-2048-a".to_string(), b"\x1b[?1049h\x1b[?2048h".to_vec());
+        st.attach_outputs
+            .insert("t-2048-b".to_string(), b"\x1b[?1049h\x1b[?2048h".to_vec());
+    }
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    // 1. attach_active receives snapshot with ?2048h -> emits CSI 48 once, no duplicate on replay
+    let mut sess_a = AttachSession::new("t-2048-a".to_string(), 80, 24);
+    sess_a.attach_active(&framed).await.expect("attach_active");
+    let ch_a = sess_a.channel.as_ref().unwrap().channel;
+    let first = sess_a.recv_next().await.expect("snapshot frame");
+    sess_a.handle_frame(first);
+    assert!(sess_a.screen.modes().in_band_resize);
+
+    // Replaying ?2048h at same size must not emit duplicate CSI 48
+    srv.send_attach_data(ch_a, b"\x1b[?2048h".to_vec()).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess_a.drain_frames();
+
+    // 2. request_resize and debounced flush_pending_resize emit CSI 48 once per dimension
+    let t0 = Instant::now();
+    assert!(sess_a.request_resize(100, 30, t0).expect("resize 100x30"));
+    assert!(!sess_a
+        .request_resize(90, 28, t0 + Duration::from_millis(10))
+        .expect("debounced 90x28"));
+    assert!(sess_a
+        .flush_pending_resize(t0 + Duration::from_millis(60))
+        .expect("flush 90x28"));
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let frames_a: Vec<Vec<u8>> = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.channel == ch_a && f.kind == FRAME_DATA)
+        .map(|f| f.payload)
+        .collect();
+    assert_eq!(
+        frames_a,
+        vec![
+            b"\x1b[48;24;80;0;0t".to_vec(),
+            b"\x1b[48;30;100;0;0t".to_vec(),
+            b"\x1b[48;28;90;0;0t".to_vec(),
+        ]
+    );
+
+    // 3. Observing suppresses CSI 48; take_over_at emits CSI 48 once without duplicating on snapshot
+    let mut sess_b = AttachSession::new("t-2048-b".to_string(), 80, 24);
+    sess_b
+        .attach_observe(&framed)
+        .await
+        .expect("attach_observe");
+    let obs_ch = sess_b.channel.as_ref().unwrap().channel;
+    let obs_snap = sess_b.recv_next().await.expect("obs snapshot");
+    sess_b.handle_frame(obs_snap);
+    assert!(sess_b.screen.modes().in_band_resize);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let obs_data_count = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.channel == obs_ch && f.kind == FRAME_DATA)
+        .count();
+    assert_eq!(obs_data_count, 0, "Observing must never emit CSI 48");
+
+    sess_b
+        .take_over_at(&framed, 120, 40)
+        .await
+        .expect("take_over_at");
+    let active_ch = sess_b.channel.as_ref().unwrap().channel;
+    let active_snap = sess_b.recv_next().await.expect("active snapshot");
+    sess_b.handle_frame(active_snap);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    let frames_b: Vec<Vec<u8>> = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.channel == active_ch && f.kind == FRAME_DATA)
+        .map(|f| f.payload)
+        .collect();
+    assert_eq!(frames_b, vec![b"\x1b[48;40;120;0;0t".to_vec()]);
+}
+
+#[tokio::test]
+async fn attach_session_suppresses_in_band_resize_when_observing_or_mode_2048_disabled() {
+    use fake_hc::{make_terminal, FRAME_DATA, FRAME_RESIZE};
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    srv.add_terminal(make_terminal("t-off", "nvim")).await;
+    {
+        let mut st = srv.state.lock().await;
+        st.echo_attach_input = false;
+    }
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    // Observing session ignores server FrameKind::Resize even if ?2048h was seen
+    let mut sess = AttachSession::new("t-off".to_string(), 80, 24);
+    sess.attach_observe(&framed).await.expect("observe");
+    let obs_ch = sess.channel.as_ref().unwrap().channel;
+    srv.send_attach_data(obs_ch, b"\x1b[?1049h\x1b[?2048h".to_vec())
+        .await;
+    srv.send_attach_resize(obs_ch, 90, 25).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(sess.screen.modes().in_band_resize);
+
+    // Promote to Active at 90x25 -> emits CSI 48 for 90x25
+    sess.take_over_at(&framed, 90, 25)
+        .await
+        .expect("take_over_at");
+    let act_ch = sess.channel.as_ref().unwrap().channel;
+
+    // Disable ?2048l -> subsequent resize emits only FRAME_RESIZE, no CSI 48
+    srv.send_attach_data(act_ch, b"\x1b[?2048l".to_vec()).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(!sess.screen.modes().in_band_resize);
+
+    let t0 = Instant::now();
+    assert!(sess.request_resize(70, 22, t0).expect("resize after ?2048l"));
+
+    // Re-enable ?2048h on alt screen, then exit alt screen via ?1049l without ?2048l
+    srv.send_attach_data(act_ch, b"\x1b[?2048h\x1b[?1049l".to_vec())
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(!sess.screen.modes().in_band_resize);
+
+    assert!(sess
+        .request_resize(60, 20, t0 + Duration::from_millis(60))
+        .expect("resize after ?1049l"));
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let recorded = srv.recorded_frames().await;
+    let obs_data: Vec<_> = recorded
+        .iter()
+        .filter(|f| f.channel == obs_ch && f.kind == FRAME_DATA)
+        .collect();
+    assert!(obs_data.is_empty(), "Observing must emit zero FRAME_DATA");
+
+    let act_data: Vec<Vec<u8>> = recorded
+        .iter()
+        .filter(|f| f.channel == act_ch && f.kind == FRAME_DATA)
+        .map(|f| f.payload.clone())
+        .collect();
+    assert_eq!(
+        act_data,
+        vec![b"\x1b[48;25;90;0;0t".to_vec()],
+        "resizes after ?2048l and ?1049l must not emit CSI 48"
+    );
+
+    let resize_count = recorded
+        .iter()
+        .filter(|f| f.channel == act_ch && f.kind == FRAME_RESIZE)
+        .count();
+    assert_eq!(resize_count, 2);
+}

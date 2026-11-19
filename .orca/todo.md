@@ -32,13 +32,13 @@
 Add integration tests in `tests/term.rs` against `FakeHcServer`.
 
 **Acceptance criteria:**
-- [ ] When `in_band_resize` is `true` on an `Active` session, `request_resize`, `flush_pending_resize`, initial snapshot `?2048h` activation (`attach_active`), and `take_over_at` each emit `\x1b[48;{rows};{cols};0;0t` once for `(cols, rows)` without duplicate sends for identical dimensions.
-- [ ] `Observing` sessions never emit `CSI 48` on snapshot or resize.
-- [ ] Once `?2048l` or `?1049l` disables `in_band_resize`, subsequent `request_resize` calls emit only `FrameKind::Resize` (never `CSI 48`).
+- [x] When `in_band_resize` is `true` on an `Active` session, `request_resize`, `flush_pending_resize`, initial snapshot `?2048h` activation (`attach_active`), and `take_over_at` each emit `\x1b[48;{rows};{cols};0;0t` once for `(cols, rows)` without duplicate sends for identical dimensions.
+- [x] `Observing` sessions never emit `CSI 48` on snapshot or resize.
+- [x] Once `?2048l` or `?1049l` disables `in_band_resize`, subsequent `request_resize` calls emit only `FrameKind::Resize` (never `CSI 48`).
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib term::session && cargo test --test term`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib term::session && cargo test --test term`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 1
 
@@ -51,9 +51,9 @@ Add integration tests in `tests/term.rs` against `FakeHcServer`.
 ---
 
 ## Checkpoint: After Tasks 1–2
-- [ ] `cargo check --all-targets` passes with zero warnings
-- [ ] `cargo test --lib` and `cargo test --test term` pass
-- [ ] `AttachSession` emits `CSI 48 ; rows ; cols ; 0 ; 0 t` strictly when `SessionState::Active && modes().in_band_resize`
+- [x] `cargo check --all-targets` passes with zero warnings
+- [x] `cargo test --lib` and `cargo test --test term` pass
+- [x] `AttachSession` emits `CSI 48 ; rows ; cols ; 0 ; 0 t` strictly when `SessionState::Active && modes().in_band_resize`
 
 ---
 

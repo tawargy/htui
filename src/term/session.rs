@@ -30,6 +30,7 @@ pub struct AttachSession {
     pub takeover_hint: bool,
     pub resize_notifications: bool,
     last_resize_sent: Option<Instant>,
+    last_in_band_resize_sent: Option<(u16, u16)>,
     pending_resize: Option<(u16, u16)>,
     pending_redraw: bool,
 }
@@ -44,9 +45,28 @@ impl AttachSession {
             takeover_hint: false,
             resize_notifications: false,
             last_resize_sent: None,
+            last_in_band_resize_sent: None,
             pending_resize: None,
             pending_redraw: false,
         }
+    }
+
+    /// Sends DEC Mode 2048 in-band resize notification when the session is Active
+    /// and the current screen has Mode 2048 enabled, deduplicated per `(cols, rows)`.
+    pub fn send_in_band_resize_if_needed(&mut self) -> HcResult<bool> {
+        if self.state != SessionState::Active || !self.screen.modes().in_band_resize {
+            return Ok(false);
+        }
+        let (cols, rows) = self.screen.size();
+        if self.last_in_band_resize_sent == Some((cols, rows)) {
+            return Ok(false);
+        }
+        let Some(ch) = &self.channel else {
+            return Ok(false);
+        };
+        ch.send_data(format!("\x1b[48;{rows};{cols};0;0t").as_bytes())?;
+        self.last_in_band_resize_sent = Some((cols, rows));
+        Ok(true)
     }
 
     pub fn take_pending_redraw(&mut self) -> bool {
@@ -67,6 +87,7 @@ impl AttachSession {
         self.state = SessionState::Observing;
         self.takeover_hint = false;
         self.pending_resize = None;
+        self.last_in_band_resize_sent = None;
         Ok(())
     }
 
@@ -84,6 +105,8 @@ impl AttachSession {
         self.state = SessionState::Active;
         self.takeover_hint = false;
         self.pending_resize = None;
+        self.last_in_band_resize_sent = None;
+        self.send_in_band_resize_if_needed()?;
         Ok(())
     }
 
@@ -108,6 +131,8 @@ impl AttachSession {
         self.state = SessionState::Active;
         self.takeover_hint = false;
         self.pending_resize = None;
+        self.last_in_band_resize_sent = None;
+        self.send_in_band_resize_if_needed()?;
         Ok(())
     }
 
@@ -167,6 +192,7 @@ impl AttachSession {
                 self.screen.resize(cols, rows);
                 self.last_resize_sent = Some(now);
                 self.pending_resize = None;
+                self.send_in_band_resize_if_needed()?;
                 return Ok(true);
             }
         } else {
@@ -213,6 +239,7 @@ impl AttachSession {
                 self.screen.resize(cols, rows);
                 self.last_resize_sent = Some(now);
                 self.pending_resize = None;
+                self.send_in_band_resize_if_needed()?;
                 return Ok(true);
             }
         }
@@ -229,15 +256,24 @@ impl AttachSession {
                         let _ = ch.send_credit(len);
                     }
                 }
+                if !self.screen.modes().in_band_resize {
+                    self.last_in_band_resize_sent = None;
+                } else if self.state == SessionState::Active {
+                    let _ = self.send_in_band_resize_if_needed();
+                }
             }
             FrameKind::Resize => {
                 if let Some((cols, rows)) = frame.parse_resize() {
                     self.screen.resize(cols, rows);
+                    if self.state == SessionState::Active {
+                        let _ = self.send_in_band_resize_if_needed();
+                    }
                 }
             }
             FrameKind::Close => {
                 self.state = SessionState::Ended;
                 self.channel = None;
+                self.last_in_band_resize_sent = None;
             }
             _ => {}
         }

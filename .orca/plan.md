@@ -69,10 +69,10 @@ Task 1: Track DECSET 2048 (in_band_resize) in AlacrittyScreen & ScreenModes
 
 ### Phase 1: Mode 2048 Tracking & In-Band Resize Transport
 - [x] **Task 1:** Track DECSET 2048 (`in_band_resize`) in `ScreenModes` and `AlacrittyScreen` (`src/term/screen.rs`) with unit tests covering primary/alt isolation, `?2048l`, `?1049l`, `RIS`, and `hc` snapshot resets.
-- [ ] **Task 2:** Emit `\x1b[48;{rows};{cols};0;0t` in `AttachSession` (`src/term/session.rs`) on active resize, attach snapshot activation, and `take_over_at`, with `FakeHcServer` integration tests in `tests/term.rs`.
+- [x] **Task 2:** Emit `\x1b[48;{rows};{cols};0;0t` in `AttachSession` (`src/term/session.rs`) on active resize, attach snapshot activation, and `take_over_at`, with `FakeHcServer` integration tests in `tests/term.rs`.
 
 ### Checkpoint: After Tasks 1–2
-- [ ] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass with zero warnings.
+- [x] `cargo check --all-targets`, `cargo test --lib`, and `cargo test --test term` pass with zero warnings.
 
 ### Phase 2: Startup & Spawn Sizing + Regression Suite
 - [ ] **Task 3:** Add `InitialSize` to `RunParams` (`src/hc/types.rs`), extract `compute_panes_area` + `predict_spawn_inner_size` in `TuiApp` (`src/ui/app.rs`), prime `app.last_panes_area` before startup attach, and populate `RunParams.size` in `dispatch_action(Spawn)` (`src/ui/event_loop.rs`), with unit/client tests.
