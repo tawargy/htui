@@ -84,6 +84,10 @@ async fn run_tui_loop(
         .unwrap_or_default();
     let store = LayoutStore::new(fallback_layout, &methods);
 
+    if let Ok(sz) = terminal.size() {
+        app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, sz.width, sz.height));
+    }
+
     if let Ok((snap, stream)) = EventStream::subscribe(socket_path).await {
         ev_stream = Some(stream);
         if let Some(client) = &rpc {
@@ -113,9 +117,6 @@ async fn run_tui_loop(
             initial_space_name.as_deref(),
         )
         .await;
-        if let Ok(sz) = terminal.size() {
-            app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, sz.width, sz.height));
-        }
         attach_active_panel_terminals(&mut app, framed.as_ref()).await;
     } else {
         init_disconnected_startup(&mut app, Instant::now());
