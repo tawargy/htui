@@ -1668,3 +1668,54 @@ async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
         ]
     );
 }
+
+#[tokio::test]
+async fn take_over_at_drains_queued_observing_mode_resets_before_in_band_resize() {
+    use fake_hc::{make_terminal, FRAME_DATA};
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    srv.add_terminal(make_terminal("t-obs-reset", "nvim")).await;
+    {
+        let mut st = srv.state.lock().await;
+        st.echo_attach_input = false;
+    }
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+
+    let mut sess = AttachSession::new("t-obs-reset".to_string(), 80, 24);
+    sess.attach_observe(&framed).await.expect("attach_observe");
+    let obs_ch = sess.channel.as_ref().unwrap().channel;
+
+    // While observing, program enters alt screen + Mode 2048
+    srv.send_attach_data(obs_ch, b"\x1b[?1049h\x1b[?2048h".to_vec())
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    sess.drain_frames();
+    assert!(sess.screen.modes().in_band_resize);
+
+    // Program exits alt screen + disables Mode 2048, queued in ch.rx before take_over_at
+    srv.send_attach_data(obs_ch, b"\x1b[?2048l\x1b[?1049l".to_vec())
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Promote directly without manually calling drain_frames first
+    sess.take_over_at(&framed, 90, 25)
+        .await
+        .expect("take_over_at");
+    let act_ch = sess.channel.as_ref().unwrap().channel;
+
+    assert!(!sess.screen.modes().in_band_resize);
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let act_data: Vec<Vec<u8>> = srv
+        .recorded_frames()
+        .await
+        .into_iter()
+        .filter(|f| f.channel == act_ch && f.kind == FRAME_DATA)
+        .map(|f| f.payload)
+        .collect();
+    assert!(
+        act_data.is_empty(),
+        "queued ?2048l/?1049l must suppress CSI 48 on take_over_at, got {act_data:?}"
+    );
+}

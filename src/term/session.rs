@@ -117,6 +117,9 @@ impl AttachSession {
         cols: u16,
         rows: u16,
     ) -> HcResult<()> {
+        if self.drain_frames() {
+            self.pending_redraw = true;
+        }
         if let Some(old) = self.channel.take() {
             let _ = old.close().await;
         }
