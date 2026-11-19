@@ -314,11 +314,17 @@ mod tests {
 
         let with_size = serde_json::to_value(RunParams {
             argv: vec!["nvim".into()],
-            size: Some(InitialSize { cols: 134, rows: 38 }),
+            size: Some(InitialSize {
+                cols: 134,
+                rows: 38,
+            }),
             ..Default::default()
         })
         .expect("serialize");
-        assert_eq!(with_size["size"], serde_json::json!({ "cols": 134, "rows": 38 }));
+        assert_eq!(
+            with_size["size"],
+            serde_json::json!({ "cols": 134, "rows": 38 })
+        );
     }
 
     #[test]

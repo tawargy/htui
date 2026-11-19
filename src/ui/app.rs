@@ -480,8 +480,8 @@ impl TuiApp {
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, now: Instant) {
         let (sidebar_area, tab_area, panes_area, status_area) = self.compute_layout_areas(area);
-        self.last_sidebar_areas = sidebar_area
-            .map(|sa| render_sidebar(sa, buf, &self.sidebar, self.sidebar_focused));
+        self.last_sidebar_areas =
+            sidebar_area.map(|sa| render_sidebar(sa, buf, &self.sidebar, self.sidebar_focused));
 
         let space_layout = self.layouts.spaces.get(&self.active_space);
         self.last_tabs_geom = render_tab_bar(

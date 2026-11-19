@@ -1485,7 +1485,9 @@ async fn attach_session_suppresses_in_band_resize_when_observing_or_mode_2048_di
     assert!(!sess.screen.modes().in_band_resize);
 
     let t0 = Instant::now();
-    assert!(sess.request_resize(70, 22, t0).expect("resize after ?2048l"));
+    assert!(sess
+        .request_resize(70, 22, t0)
+        .expect("resize after ?2048l"));
 
     // Re-enable ?2048h on alt screen, then exit alt screen via ?1049l without ?2048l
     srv.send_attach_data(act_ch, b"\x1b[?2048h\x1b[?1049l".to_vec())
@@ -1579,10 +1581,8 @@ async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
     {
         let mut st = srv.state.lock().await;
         st.echo_attach_input = false;
-        st.attach_outputs.insert(
-            "t-nvim-ct".to_string(),
-            b"\x1b[?1049h\x1b[?2048h".to_vec(),
-        );
+        st.attach_outputs
+            .insert("t-nvim-ct".to_string(), b"\x1b[?1049h\x1b[?2048h".to_vec());
     }
 
     let framed = FramedClient::connect(srv.socket_path())
@@ -1598,7 +1598,8 @@ async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
     assert!(sess.screen.modes().in_band_resize);
 
     // 1. Attach at 134x38 triggers CSI 48;38;134;0;0t and full-width redraw
-    srv.send_attach_data(ch, nvim_cargo_toml_frame(134, 38)).await;
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(134, 38))
+        .await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     sess.drain_frames();
     assert!(sess.screen.row_text(0).contains("Cargo.toml"));
@@ -1608,7 +1609,8 @@ async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
     // 2. Shrink 134x38 -> 52x33 emits CSI 48;33;52;0;0t and redraws cleanly at 52 cols
     let t0 = Instant::now();
     assert!(sess.request_resize(52, 33, t0).expect("shrink 52x33"));
-    srv.send_attach_data(ch, nvim_cargo_toml_frame(52, 33)).await;
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(52, 33))
+        .await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     sess.drain_frames();
     assert!(sess.screen.row_text(11).starts_with(" 19 tokio"));
@@ -1621,7 +1623,8 @@ async fn nvim_cargo_toml_mode_2048_attach_shrink_grow_and_exit_to_zsh() {
     assert!(sess
         .request_resize(78, 33, t0 + Duration::from_millis(60))
         .expect("grow 78x33"));
-    srv.send_attach_data(ch, nvim_cargo_toml_frame(78, 33)).await;
+    srv.send_attach_data(ch, nvim_cargo_toml_frame(78, 33))
+        .await;
     tokio::time::sleep(Duration::from_millis(20)).await;
     sess.drain_frames();
     assert!(sess.screen.row_text(11).contains("tawargy: feat"));

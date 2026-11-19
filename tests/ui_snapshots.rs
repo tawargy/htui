@@ -5670,7 +5670,8 @@ async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backe
         );
     }
     let lualine_y = p1_rect_shrink.y + p1_rect_shrink.height - 2;
-    let lualine_row: String = ((p1_rect_shrink.x + 1)..(p1_rect_shrink.x + p1_rect_shrink.width - 1))
+    let lualine_row: String = ((p1_rect_shrink.x + 1)
+        ..(p1_rect_shrink.x + p1_rect_shrink.width - 1))
         .map(|x| shrink_buf.cell((x, lualine_y)).unwrap().symbol())
         .collect();
     assert!(lualine_row.contains("NORMAL"));
@@ -5763,7 +5764,10 @@ async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backe
         drag_t + Duration::from_millis(60),
     );
     let (dw1, dh1) = app.pane_inner_size(p1);
-    assert!(dw1 > split_w1, "expected divider drag to grow p1 ({split_w1} -> {dw1})");
+    assert!(
+        dw1 > split_w1,
+        "expected divider drag to grow p1 ({split_w1} -> {dw1})"
+    );
     app.sessions
         .get_mut(&t1_addr)
         .unwrap()
@@ -5781,11 +5785,26 @@ async fn side_by_side_nvim_mode_2048_resize_storm_split_and_drag_with_sync_backe
     assert_moveto_follows_non_ascii(&ansi_final, "│", "nvim + zsh divider │");
 
     // Verify borders between p1 and p2 intact, Kanagawa bg across p1, single-row lualine
-    let p1_rect = app.last_geom.panes.iter().find(|p| p.pane_id == p1).unwrap().rect;
-    let p2_rect = app.last_geom.panes.iter().find(|p| p.pane_id == p2).unwrap().rect;
+    let p1_rect = app
+        .last_geom
+        .panes
+        .iter()
+        .find(|p| p.pane_id == p1)
+        .unwrap()
+        .rect;
+    let p2_rect = app
+        .last_geom
+        .panes
+        .iter()
+        .find(|p| p.pane_id == p2)
+        .unwrap()
+        .rect;
     for y in (p1_rect.y + 1)..(p1_rect.y + p1_rect.height - 1) {
         assert_eq!(
-            final_buf.cell((p1_rect.x + p1_rect.width - 1, y)).unwrap().symbol(),
+            final_buf
+                .cell((p1_rect.x + p1_rect.width - 1, y))
+                .unwrap()
+                .symbol(),
             "│"
         );
         assert_eq!(final_buf.cell((p2_rect.x, y)).unwrap().symbol(), "│");
