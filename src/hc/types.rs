@@ -264,6 +264,12 @@ pub struct MissedPayload {
     pub terminals: Vec<Terminal>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InitialSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct RunParams {
@@ -277,6 +283,8 @@ pub struct RunParams {
     pub on: Option<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<InitialSize>,
     pub keep: bool,
     pub wait: bool,
 }
@@ -297,6 +305,20 @@ mod tests {
             StatusKind::parse("thinking_hard"),
             StatusKind::Other("thinking_hard".to_string())
         );
+    }
+
+    #[test]
+    fn run_params_serializes_size_only_when_present() {
+        let without_size = serde_json::to_value(RunParams::default()).expect("serialize");
+        assert!(without_size.get("size").is_none());
+
+        let with_size = serde_json::to_value(RunParams {
+            argv: vec!["nvim".into()],
+            size: Some(InitialSize { cols: 134, rows: 38 }),
+            ..Default::default()
+        })
+        .expect("serialize");
+        assert_eq!(with_size["size"], serde_json::json!({ "cols": 134, "rows": 38 }));
     }
 
     #[test]

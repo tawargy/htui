@@ -11,6 +11,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
 use tokio::time::MissedTickBehavior;
 
@@ -18,7 +19,7 @@ use crate::config::{AttachMode, Config};
 use crate::hc::events::{EventMessage, EventStream};
 use crate::hc::framed::FramedClient;
 use crate::hc::rpc::RpcClient;
-use crate::hc::types::{EventPayload, RunParams};
+use crate::hc::types::{EventPayload, InitialSize, RunParams};
 use crate::layout::panel::SpaceLayout;
 use crate::layout::presence::PresenceManager;
 use crate::layout::store::LayoutStore;
@@ -112,6 +113,9 @@ async fn run_tui_loop(
             initial_space_name.as_deref(),
         )
         .await;
+        if let Ok(sz) = terminal.size() {
+            app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, sz.width, sz.height));
+        }
         attach_active_panel_terminals(&mut app, framed.as_ref()).await;
     } else {
         init_disconnected_startup(&mut app, Instant::now());
@@ -634,10 +638,22 @@ pub async fn dispatch_action(
                 } else {
                     None
                 };
+                let orig_space = app.active_space.clone();
+                let resolved_space = target_space.as_deref().unwrap_or(UNASSIGNED_SPACE);
+                let switched_space = resolved_space != orig_space;
+                let effective_target = if switched_space {
+                    SpawnTarget::NewPanel
+                } else {
+                    target
+                };
+                let initial_size = app
+                    .predict_spawn_inner_size(&effective_target)
+                    .map(|(cols, rows)| InitialSize { cols, rows });
                 match client
                     .terminal_run(RunParams {
                         argv,
                         labels,
+                        size: initial_size,
                         ..Default::default()
                     })
                     .await
@@ -645,22 +661,14 @@ pub async fn dispatch_action(
                     Ok(term) => {
                         let addr = term.address.clone();
                         app.model.terminals.insert(addr.clone(), term);
-                        let orig_space = app.active_space.clone();
-                        let resolved_space = target_space.as_deref().unwrap_or(UNASSIGNED_SPACE);
                         if let Some(sp) = &target_space {
                             app.model.declared_spaces.insert(sp.clone());
                         }
-                        let switched_space = resolved_space != orig_space;
                         if switched_space {
                             if let Some(removed) = app.switch_space(resolved_space.to_string()) {
                                 let _ = store.remove_space(Some(client), &removed).await;
                             }
                         }
-                        let effective_target = if switched_space {
-                            SpawnTarget::NewPanel
-                        } else {
-                            target
-                        };
                         app.place_spawned_terminal(&addr, effective_target);
                         app.sidebar_focused = false;
                         app.refresh_sidebar();

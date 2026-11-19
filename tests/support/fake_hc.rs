@@ -513,6 +513,14 @@ async fn dispatch_rpc(
             if let Some(name) = params.get("name") {
                 t["name"] = name.clone();
             }
+            if let Some(size) = params.get("size") {
+                if let Some(cols) = size.get("cols").and_then(|v| v.as_u64()) {
+                    t["cols"] = json!(cols);
+                }
+                if let Some(rows) = size.get("rows").and_then(|v| v.as_u64()) {
+                    t["rows"] = json!(rows);
+                }
+            }
             st.terminals.push(t.clone());
             (
                 Some(json!({ "jsonrpc": "2.0", "id": id, "result": t })),

@@ -378,3 +378,77 @@ async fn auto_start_succeeds_when_socket_binds() {
 
     assert_eq!(outcome, AutoStartOutcome::Started);
 }
+
+#[tokio::test]
+async fn dispatch_spawn_passes_predicted_initial_size_to_terminal_run() {
+    use herdr_tui::config::Config;
+    use herdr_tui::layout::store::LayoutStore;
+    use herdr_tui::layout::tree::SplitAxis;
+    use herdr_tui::ui::app::{AppAction, TuiApp};
+    use herdr_tui::ui::dialogs::SpawnTarget;
+    use herdr_tui::ui::event_loop::dispatch_action;
+    use ratatui::layout::Rect;
+
+    let srv = FakeHcServer::start().await.expect("start fake server");
+    let rpc = RpcClient::connect(srv.socket_path()).await.expect("rpc");
+    let framed = FramedClient::connect(srv.socket_path())
+        .await
+        .expect("framed");
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let store = LayoutStore::new(tmp.path().join("layouts.toml"), &[]);
+
+    let mut app = TuiApp::new(Config::default(), Some("api".into()));
+    app.last_panes_area = app.compute_panes_area(Rect::new(0, 0, 166, 42));
+    let p1 = app.focused_pane.expect("p1");
+    let panel1 = app.active_panel_id().expect("panel1");
+
+    // 1. IntoPane spawn uses full pane_inner_size
+    let expected_full = app.pane_inner_size(p1);
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "nvim".into(),
+            task: "Cargo.toml".into(),
+            space: "api".into(),
+            target: SpawnTarget::IntoPane {
+                panel_id: panel1,
+                pane_id: p1,
+            },
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t1_size = {
+        let t1 = app.model.terminals.get("t1").expect("t1");
+        (t1.cols, t1.rows)
+    };
+    assert_eq!(t1_size, expected_full);
+
+    // 2. SplitPane horizontal spawn predicts split inner size before terminal.run
+    let split_target = SpawnTarget::SplitPane {
+        panel_id: panel1,
+        pane_id: p1,
+        axis: SplitAxis::Horizontal,
+    };
+    let expected_split = app
+        .predict_spawn_inner_size(&split_target)
+        .expect("split prediction");
+    dispatch_action(
+        AppAction::Spawn {
+            command_or_template: "zsh".into(),
+            task: String::new(),
+            space: "api".into(),
+            target: split_target,
+        },
+        &mut app,
+        Some(&rpc),
+        Some(&framed),
+        &store,
+    )
+    .await;
+    let t2 = app.model.terminals.get("t2").expect("t2");
+    assert_eq!((t2.cols, t2.rows), expected_split);
+    assert!(t2.cols < t1_size.0);
+}

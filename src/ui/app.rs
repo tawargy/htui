@@ -444,7 +444,7 @@ impl TuiApp {
         }
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, now: Instant) {
+    fn compute_layout_areas(&self, area: Rect) -> (Option<Rect>, Rect, Rect, Rect) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(3), Constraint::Length(1)])
@@ -453,7 +453,7 @@ impl TuiApp {
         let main_area = chunks[0];
         let status_area = chunks[1];
 
-        let right_area =
+        let (sidebar_area, right_area) =
             if self.sidebar_visible && main_area.width > self.config.ui.sidebar_width + 10 {
                 let cols = Layout::default()
                     .direction(Direction::Horizontal)
@@ -462,24 +462,26 @@ impl TuiApp {
                         Constraint::Min(10),
                     ])
                     .split(main_area);
-                self.last_sidebar_areas = Some(render_sidebar(
-                    cols[0],
-                    buf,
-                    &self.sidebar,
-                    self.sidebar_focused,
-                ));
-                cols[1]
+                (Some(cols[0]), cols[1])
             } else {
-                self.last_sidebar_areas = None;
-                main_area
+                (None, main_area)
             };
 
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(1), Constraint::Min(3)])
             .split(right_area);
-        let tab_area = right_chunks[0];
-        let panes_area = right_chunks[1];
+        (sidebar_area, right_chunks[0], right_chunks[1], status_area)
+    }
+
+    pub fn compute_panes_area(&self, area: Rect) -> Rect {
+        self.compute_layout_areas(area).2
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, now: Instant) {
+        let (sidebar_area, tab_area, panes_area, status_area) = self.compute_layout_areas(area);
+        self.last_sidebar_areas = sidebar_area
+            .map(|sa| render_sidebar(sa, buf, &self.sidebar, self.sidebar_focused));
 
         let space_layout = self.layouts.spaces.get(&self.active_space);
         self.last_tabs_geom = render_tab_bar(
@@ -1175,6 +1177,63 @@ impl TuiApp {
             );
         }
         (80, 24)
+    }
+
+    pub fn predict_spawn_inner_size(&self, target: &SpawnTarget) -> Option<(u16, u16)> {
+        if self.last_panes_area.width == 0 || self.last_panes_area.height == 0 {
+            return None;
+        }
+        let inner = |r: Rect| {
+            (
+                r.width.saturating_sub(2).max(1),
+                r.height.saturating_sub(2).max(1),
+            )
+        };
+        match *target {
+            SpawnTarget::IntoPane { panel_id, pane_id } => {
+                if let Some(panel) = self
+                    .layouts
+                    .spaces
+                    .get(&self.active_space)
+                    .and_then(|s| s.panel(panel_id))
+                {
+                    if let Some((_, rect)) = panel
+                        .tree
+                        .compute_rects(self.last_panes_area)
+                        .into_iter()
+                        .find(|(pid, _)| *pid == pane_id)
+                    {
+                        return Some(inner(rect));
+                    }
+                }
+                Some(inner(self.last_panes_area))
+            }
+            SpawnTarget::SplitPane {
+                panel_id,
+                pane_id,
+                axis,
+            } => {
+                if let Some(panel) = self
+                    .layouts
+                    .spaces
+                    .get(&self.active_space)
+                    .and_then(|s| s.panel(panel_id))
+                {
+                    let mut tree = panel.tree.clone();
+                    if let Some(new_pane_id) = tree.split(pane_id, axis, None) {
+                        if let Some((_, rect)) = tree
+                            .compute_rects(self.last_panes_area)
+                            .into_iter()
+                            .find(|(pid, _)| *pid == new_pane_id)
+                        {
+                            return Some(inner(rect));
+                        }
+                    }
+                }
+                Some(inner(self.last_panes_area))
+            }
+            SpawnTarget::NewPanel => Some(inner(self.last_panes_area)),
+        }
     }
 
     pub fn sync_pane_sizes(&mut self, now: Instant) -> bool {
@@ -1991,5 +2050,61 @@ mod tests {
             t0 + Duration::from_millis(5),
         );
         assert!(!app.has_pending_outer_resize());
+    }
+
+    #[test]
+    fn compute_panes_area_matches_render_and_predict_spawn_inner_size_matches_placement() {
+        let mut app = TuiApp::new(Config::default(), Some("api".into()));
+        assert_eq!(app.predict_spawn_inner_size(&SpawnTarget::NewPanel), None);
+
+        let area = Rect::new(0, 0, 166, 42);
+        let expected_panes = app.compute_panes_area(area);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf, Instant::now());
+        assert_eq!(app.last_panes_area, expected_panes);
+
+        // Sidebar hidden case also matches render
+        app.sidebar_visible = false;
+        let expected_no_sb = app.compute_panes_area(area);
+        app.render(area, &mut buf, Instant::now());
+        assert_eq!(app.last_panes_area, expected_no_sb);
+        assert!(expected_no_sb.width > expected_panes.width);
+
+        // Predict IntoPane matches pane_inner_size after placement
+        let panel_id = app.active_panel_id().unwrap();
+        let p1 = app.focused_pane.unwrap();
+        let pred_into = app.predict_spawn_inner_size(&SpawnTarget::IntoPane {
+            panel_id,
+            pane_id: p1,
+        });
+        assert_eq!(pred_into, Some(app.pane_inner_size(p1)));
+
+        // Predict SplitPane (Horizontal) matches post-placement pane_inner_size
+        let split_target = SpawnTarget::SplitPane {
+            panel_id,
+            pane_id: p1,
+            axis: SplitAxis::Horizontal,
+        };
+        let pred_split_h = app.predict_spawn_inner_size(&split_target);
+        app.place_spawned_terminal("t-split-h", split_target);
+        let new_pane_h = app.focused_pane.unwrap();
+        assert_eq!(pred_split_h, Some(app.pane_inner_size(new_pane_h)));
+
+        // Predict SplitPane (Vertical) matches post-placement pane_inner_size
+        let split_v_target = SpawnTarget::SplitPane {
+            panel_id,
+            pane_id: new_pane_h,
+            axis: SplitAxis::Vertical,
+        };
+        let pred_split_v = app.predict_spawn_inner_size(&split_v_target);
+        app.place_spawned_terminal("t-split-v", split_v_target);
+        let new_pane_v = app.focused_pane.unwrap();
+        assert_eq!(pred_split_v, Some(app.pane_inner_size(new_pane_v)));
+
+        // Predict NewPanel matches post-placement pane_inner_size
+        let pred_new_panel = app.predict_spawn_inner_size(&SpawnTarget::NewPanel);
+        app.place_spawned_terminal("t-new-panel", SpawnTarget::NewPanel);
+        let new_panel_pane = app.focused_pane.unwrap();
+        assert_eq!(pred_new_panel, Some(app.pane_inner_size(new_panel_pane)));
     }
 }

@@ -68,13 +68,13 @@ Add integration tests in `tests/term.rs` against `FakeHcServer`.
 Add focused unit/client tests in `src/ui/app.rs` and `tests/hc_client.rs` (plus update `FakeHcServer` if needed to record `size` cleanly).
 
 **Acceptance criteria:**
-- [ ] `TuiApp::render` and `TuiApp::compute_panes_area` share identical layout computation, and `predict_spawn_inner_size` matches post-placement `pane_inner_size` across `IntoPane`, `NewPanel`, and `SplitPane`.
-- [ ] `run_tui_loop` primes `app.last_panes_area` from `terminal.size()` before `attach_active_panel_terminals` so startup attach uses the real pane size instead of `(80, 24)`.
-- [ ] `RunParams` serializes `size` only when `Some(InitialSize { .. })`, and `dispatch_action(AppAction::Spawn)` sends the predicted target `(cols, rows)` to `terminal.run`.
+- [x] `TuiApp::render` and `TuiApp::compute_panes_area` share identical layout computation, and `predict_spawn_inner_size` matches post-placement `pane_inner_size` across `IntoPane`, `NewPanel`, and `SplitPane`.
+- [x] `run_tui_loop` primes `app.last_panes_area` from `terminal.size()` before `attach_active_panel_terminals` so startup attach uses the real pane size instead of `(80, 24)`.
+- [x] `RunParams` serializes `size` only when `Some(InitialSize { .. })`, and `dispatch_action(AppAction::Spawn)` sends the predicted target `(cols, rows)` to `terminal.run`.
 
 **Verification:**
-- [ ] Tests pass: `cargo test --lib ui::app && cargo test --test hc_client`
-- [ ] Build succeeds: `cargo check --all-targets`
+- [x] Tests pass: `cargo test --lib ui::app && cargo test --test hc_client`
+- [x] Build succeeds: `cargo check --all-targets`
 
 **Dependencies:** Task 2
 
